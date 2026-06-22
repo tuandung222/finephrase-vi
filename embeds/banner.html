@@ -1,0 +1,793 @@
+<div class="d3-bookshelf-banner" style="width:100%;margin:0;aspect-ratio:2/1;min-height:380px;"></div>
+<style>
+  .d3-bookshelf-banner {
+    position: relative;
+    overflow: visible;
+    background: transparent;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+  .d3-bookshelf-banner svg { display: block; }
+  .d3-bookshelf-banner .book {
+    cursor: pointer;
+  }
+  .d3-bookshelf-banner .book .book-spine,
+  .d3-bookshelf-banner .book .book-pages {
+    transition: transform 0.22s cubic-bezier(.33,.1,.2,1), filter 0.22s ease, opacity 0.22s ease;
+  }
+  .d3-bookshelf-banner .overlay-text {
+    pointer-events: none;
+    user-select: none;
+  }
+  .d3-bookshelf-banner .d3-tooltip {
+    position: absolute;
+    pointer-events: none;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg);
+    backdrop-filter: blur(10px);
+    color: var(--text-color);
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    opacity: 0;
+    transition: opacity .12s ease;
+    white-space: nowrap;
+    z-index: 10;
+  }
+</style>
+<script>
+(() => {
+  const ensureD3 = (cb) => {
+    if (window.d3 && typeof window.d3.select === 'function') return cb();
+    let s = document.getElementById('d3-cdn-script');
+    if (!s) { s = document.createElement('script'); s.id = 'd3-cdn-script'; s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js'; document.head.appendChild(s); }
+    const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+    s.addEventListener('load', onReady, { once: true });
+    if (window.d3) onReady();
+  };
+
+  const bootstrap = () => {
+    const scriptEl = document.currentScript;
+    let container = scriptEl ? scriptEl.previousElementSibling : null;
+    if (!(container && container.classList && container.classList.contains('d3-bookshelf-banner'))) {
+      const cs = Array.from(document.querySelectorAll('.d3-bookshelf-banner')).filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+      container = cs[cs.length - 1] || null;
+    }
+    if (!container) return;
+    if (container.dataset) {
+      if (container.dataset.mounted === 'true') return;
+      container.dataset.mounted = 'true';
+    }
+    container.style.position = 'relative';
+
+    const FAMILY_MAP = {
+      'gemma': 'Gemma', 'qwen': 'Qwen', 'llama': 'Llama',
+      'falcon': 'Falcon', 'granite': 'Granite', 'smollm': 'SmolLM2'
+    };
+    const SOURCE_MAP = {
+      'fineweb-edu-hq-20BT': 'FW-Edu HQ', 'fineweb-edu-lq-20BT': 'FW-Edu LQ',
+      'dclm-37BT': 'DCLM', 'cosmopedia-25BT': 'Cosmopedia'
+    };
+    const CAT_MAP = { 'format': 'Format', 'nemotron': 'Nemotron', 'rewire': 'REWIRE' };
+    const PROMPT_LABELS = {
+      'article': 'Article', 'commentary': 'Commentary', 'discussion': 'Discussion',
+      'faq': 'FAQ', 'math': 'Math', 'table': 'Table', 'tutorial': 'Tutorial',
+      'distill': 'Distill', 'diverse_qa_pairs': 'Diverse QA',
+      'extract_knowledge': 'Extract Knowledge', 'knowledge_list': 'Knowledge List',
+      'wikipedia_style_rephrasing': 'Wikipedia Style',
+      'guided_rewrite_improved': 'Guided Rewrite+', 'guided_rewrite_original': 'Guided Rewrite',
+      'explanation': 'Explanation', 'narrative': 'Narrative',
+      'continue': 'Continue', 'summarize': 'Summarize'
+    };
+
+    function toCanonicalPrompt(promptPath) {
+      let base = promptPath.split('/').pop().replace('.md', '');
+      return base.replace(/-([\w.]+-)?\d+(\.\d+)?[bm]-\w+$/, '');
+    }
+
+    function getFamily(model) {
+      const lower = model.toLowerCase();
+      return Object.entries(FAMILY_MAP).find(([k]) => lower.includes(k))?.[1] || 'Other';
+    }
+
+    function gpuDays(seconds) { return Math.round(seconds / 86400).toLocaleString() + ' days'; }
+
+    const JSON_PATHS = ['/data/rephrasing_metadata.json', './assets/data/rephrasing_metadata.json'];
+    const CSV_PATHS = ['/data/benchmark-results.csv', './assets/data/benchmark-results.csv'];
+    const fetchFirst = async (paths, parse) => {
+      for (const p of paths) {
+        try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return parse ? parse(await r.text()) : r.json(); } catch(_) {}
+      }
+      throw new Error('Data not found: ' + paths.join(', '));
+    };
+
+    const SOURCE_TO_BASELINE_RUN = {
+      'fineweb-edu-hq-20BT': 'fw_edu_hq', 'fineweb-edu-lq-20BT': 'fw_edu_lq',
+      'dclm-37BT': 'dclm', 'cosmopedia-25BT': 'cosmopedia'
+    };
+    function buildBaselineMacro(csvRows) {
+      const baselineRuns = new Set(Object.values(SOURCE_TO_BASELINE_RUN));
+      const best = {};
+      for (const row of csvRows) {
+        if (!baselineRuns.has(row.runname)) continue;
+        const step = +row.steps, score = +row.agg_score_macro;
+        if (!(row.runname in best) || step > best[row.runname][0]) best[row.runname] = [step, score];
+      }
+      const out = {};
+      for (const [src, run] of Object.entries(SOURCE_TO_BASELINE_RUN)) {
+        if (run in best) out[src] = best[run][1];
+      }
+      return out;
+    }
+
+    function fmtDelta(diff, base) {
+      const sign = diff >= 0 ? '+' : '';
+      const abs = `${sign}${diff.toFixed(3)}`;
+      if (base != null && base !== 0) {
+        const pct = (diff / base) * 100;
+        return `${abs} <span style="opacity:.5">(${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%)</span>`;
+      }
+      return abs;
+    }
+
+    // Deterministic hash for per-book variation
+    function bookHash(id, salt) { return ((id * 2654435761 + (salt || 0)) >>> 0) / 4294967296; }
+
+    const tip = document.createElement('div');
+    tip.className = 'd3-tooltip';
+    container.appendChild(tip);
+
+    Promise.all([
+      fetchFirst(JSON_PATHS),
+      fetchFirst(CSV_PATHS, d3.csvParse)
+    ]).then(([raw, csvRows]) => {
+      const baselineMacro = buildBaselineMacro(csvRows);
+
+      const data = raw.map((d, i) => {
+        const [cat] = d.prompt.split('/');
+        const promptKey = toCanonicalPrompt(d.prompt);
+        const modelShort = d.model.split('/').pop();
+        const family = getFamily(d.model);
+        const aggMacro = d.results?.agg_score_macro;
+        const baseline = baselineMacro[d.source_dataset];
+        return {
+          id: i, model: modelShort, family,
+          prompt: PROMPT_LABELS[promptKey] || promptKey,
+          cat: CAT_MAP[cat] || cat,
+          source: SOURCE_MAP[d.source_dataset] || d.source_dataset,
+          outputTokens: d.output_tokens,
+          outputHuman: d.output_tokens_human,
+          inputHuman: d.input_tokens_human,
+          gpuSeconds: d.gpu_time_seconds,
+          gpuTime: gpuDays(d.gpu_time_seconds),
+          docsM: d.num_documents / 1e6,
+          dclm: d.dclm_score_difference, dclmBase: d.input_dclm_score,
+          edu: d.edu_score_difference, eduBase: d.input_edu_score,
+          aggDiff: (aggMacro != null && baseline != null) ? aggMacro - baseline : null,
+          aggBase: baseline
+        };
+      });
+
+      // Shuffle data deterministically so thick and thin books mix on every shelf
+      const shuffled = data.slice().sort((a, b) => bookHash(a.id, 42) - bookHash(b.id, 42));
+
+      const totalDocsM = data.reduce((s, d) => s + d.docsM, 0);
+      const numExperiments = data.length;
+
+      const families = [...new Set(data.map(d => d.family))].sort();
+      let familyColors;
+      if (window.ColorPalettes) {
+        const pal = window.ColorPalettes.getColors('categorical', families.length);
+        familyColors = {};
+        families.forEach((f, i) => { familyColors[f] = pal[i]; });
+      } else {
+        const fallback = { Gemma: '#5b9bd5', Qwen: '#e07b54', Llama: '#8bc474', Falcon: '#c9a046', Granite: '#9a8ec2', SmolLM2: '#e06b9e' };
+        familyColors = {};
+        families.forEach(f => { familyColors[f] = fallback[f] || '#888'; });
+      }
+
+      const render = () => {
+        const W = container.clientWidth || 900;
+        const H = container.clientHeight || 410;
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        container.querySelectorAll('svg').forEach(el => el.remove());
+
+        const svg = d3.select(container).append('svg')
+          .attr('width', W).attr('height', H)
+          .style('font-family', "'Inter', system-ui, -apple-system, sans-serif");
+
+        const defs = svg.append('defs');
+
+        // --- Wood colors ---
+        const wood = {
+          face: isDark ? '#3d2b1f' : '#c8a882',
+          faceLight: isDark ? '#4a3628' : '#d4b896',
+          edge: isDark ? '#2a1d14' : '#a08060',
+          edgeLight: isDark ? '#53392a' : '#b89870',
+          shadow: isDark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)',
+          grain: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.04)',
+        };
+
+        // --- Layout ---
+        const SHELVES = 4;
+        const sideW = Math.max(10, Math.min(W * 0.025, 24));
+        const shelfBoardH = Math.max(5, H * 0.018);
+        const topPad = H * 0.01;
+        const shelfZoneH = H * 0.86;
+        const bookPadX = Math.max(3, W * 0.006);
+        const shelfTotalH = shelfZoneH / SHELVES;
+        const bookAreaH = shelfTotalH - shelfBoardH;
+        // The bookshelf structure ends at the bottom of the last shelf board
+        const shelfBottom = topPad + SHELVES * shelfTotalH;
+
+        // --- Background ---
+        svg.append('rect').attr('width', W).attr('height', H)
+          .attr('fill', isDark ? '#111' : '#fff');
+
+        // --- Back panel (behind books) ---
+        const backPanelColor = isDark ? '#1e1518' : '#e8ddd0';
+        const panelH = shelfBottom - topPad;
+        svg.append('rect')
+          .attr('x', sideW).attr('y', topPad)
+          .attr('width', W - sideW * 2).attr('height', panelH)
+          .attr('fill', backPanelColor);
+
+        // --- Wood grain texture on back panel ---
+        const grainG = svg.append('g').style('pointer-events', 'none');
+        for (let i = 0; i < 12; i++) {
+          const gy = topPad + panelH * (i / 12) + bookHash(i, 99) * 8;
+          grainG.append('line')
+            .attr('x1', sideW).attr('x2', W - sideW)
+            .attr('y1', gy).attr('y2', gy + bookHash(i, 77) * 4 - 2)
+            .attr('stroke', wood.grain).attr('stroke-width', 0.5);
+        }
+
+        // --- Side panels (wooden verticals) ---
+        // Left panel
+        const leftGrad = defs.append('linearGradient')
+          .attr('id', 'side-l').attr('x1', '0%').attr('x2', '100%');
+        leftGrad.append('stop').attr('offset', '0%').attr('stop-color', wood.edge);
+        leftGrad.append('stop').attr('offset', '40%').attr('stop-color', wood.faceLight);
+        leftGrad.append('stop').attr('offset', '100%').attr('stop-color', wood.face);
+        svg.append('rect')
+          .attr('x', 0).attr('y', topPad)
+          .attr('width', sideW).attr('height', panelH)
+          .attr('fill', 'url(#side-l)');
+
+        // Right panel
+        const rightGrad = defs.append('linearGradient')
+          .attr('id', 'side-r').attr('x1', '0%').attr('x2', '100%');
+        rightGrad.append('stop').attr('offset', '0%').attr('stop-color', wood.face);
+        rightGrad.append('stop').attr('offset', '60%').attr('stop-color', wood.faceLight);
+        rightGrad.append('stop').attr('offset', '100%').attr('stop-color', wood.edge);
+        svg.append('rect')
+          .attr('x', W - sideW).attr('y', topPad)
+          .attr('width', sideW).attr('height', panelH)
+          .attr('fill', 'url(#side-r)');
+
+        // Inner edge shadows on side panels
+        svg.append('rect')
+          .attr('x', sideW).attr('y', topPad)
+          .attr('width', 2).attr('height', panelH)
+          .attr('fill', isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.08)');
+        svg.append('rect')
+          .attr('x', W - sideW - 2).attr('y', topPad)
+          .attr('width', 2).attr('height', panelH)
+          .attr('fill', isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.08)');
+
+        // Top trim
+        const topGrad = defs.append('linearGradient')
+          .attr('id', 'top-trim').attr('x1', '0%').attr('y1', '0%').attr('x2', '0%').attr('y2', '100%');
+        topGrad.append('stop').attr('offset', '0%').attr('stop-color', wood.edgeLight);
+        topGrad.append('stop').attr('offset', '100%').attr('stop-color', wood.face);
+        svg.append('rect')
+          .attr('x', 0).attr('y', topPad)
+          .attr('width', W).attr('height', Math.max(3, shelfBoardH * 0.6))
+          .attr('fill', 'url(#top-trim)');
+
+        // --- Area-based sizing: both width and height scale with tokens ---
+        const tokenExtent = d3.extent(data, d => d.outputTokens);
+        const wScale = d3.scaleLinear().domain([0, tokenExtent[1]]).range([0, 1]);
+        const hScale = d3.scaleLinear().domain(tokenExtent).range([0.76, 0.95]);
+
+        // Page-top perspective: we're looking from slightly above
+        const pageTopBase = Math.max(3, bookAreaH * 0.08);    // default visible depth
+        const pageTopHover = Math.max(6, bookAreaH * 0.15);   // deeper on hover
+        const pageInset = Math.max(1, bookAreaH * 0.008);     // trapezoid inset
+
+        // --- Pack books onto shelves ---
+        const innerLeft = sideW + bookPadX;
+        const innerRight = W - sideW - bookPadX;
+        const availableW = innerRight - innerLeft;
+        const bookGap = Math.max(0.5, W * 0.001);
+
+        const totalRawUnits = shuffled.reduce((s, b) => s + wScale(b.outputTokens), 0);
+        const targetRawPerShelf = totalRawUnits / SHELVES;
+
+        const shelfGroups = [];
+        let curShelf = [], curRaw = 0;
+        for (const book of shuffled) {
+          const raw = wScale(book.outputTokens);
+          if (curShelf.length > 0 && curRaw + raw > targetRawPerShelf * 1.1 && shelfGroups.length < SHELVES - 1) {
+            shelfGroups.push(curShelf);
+            curShelf = [];
+            curRaw = 0;
+          }
+          curShelf.push(book);
+          curRaw += raw;
+        }
+        if (curShelf.length) shelfGroups.push(curShelf);
+
+        // Position books: width from tokens, height from tokens + small random jitter
+        const allLaid = shelfGroups.map((books, si) => {
+          const shelfTopY = topPad + si * shelfTotalH;
+          const rawWidths = books.map(b => wScale(b.outputTokens));
+          const totalRaw = rawWidths.reduce((s, w) => s + w, 0);
+          const totalGaps = (books.length - 1) * bookGap;
+          const scale = (availableW - totalGaps) / totalRaw;
+
+          let x = innerLeft;
+          // Reserve space at top for the page-top strip (even when hovered)
+          const pageReserve = pageTopHover;
+          const usableH = bookAreaH - pageReserve;
+          return books.map((book, bi) => {
+            const bw = rawWidths[bi] * scale;
+            const hFrac = hScale(book.outputTokens) + (bookHash(book.id, 3) - 0.5) * 0.05;
+            const bh = usableH * Math.min(0.95, Math.max(0.62, hFrac));
+            const by = shelfTopY + pageReserve + (usableH - bh);
+            const bx = x;
+            x += bw + bookGap;
+            return { ...book, bx, by, bw, bh, shelfTopY, shelfIdx: si };
+          });
+        });
+
+        const allBooks = allLaid.flat();
+
+        // --- Draw shelf boards ---
+        const numShelves = shelfGroups.length;
+        for (let si = 0; si < numShelves; si++) {
+          const boardY = topPad + si * shelfTotalH + bookAreaH;
+          const shelfGrad = defs.append('linearGradient')
+            .attr('id', `shelf-${si}`).attr('x1', '0%').attr('y1', '0%').attr('x2', '0%').attr('y2', '100%');
+          shelfGrad.append('stop').attr('offset', '0%').attr('stop-color', wood.edgeLight);
+          shelfGrad.append('stop').attr('offset', '30%').attr('stop-color', wood.faceLight);
+          shelfGrad.append('stop').attr('offset', '100%').attr('stop-color', wood.face);
+          svg.append('rect')
+            .attr('x', 0).attr('y', boardY)
+            .attr('width', W).attr('height', shelfBoardH)
+            .attr('fill', `url(#shelf-${si})`);
+          // Front edge highlight
+          svg.append('rect')
+            .attr('x', 0).attr('y', boardY)
+            .attr('width', W).attr('height', 1)
+            .attr('fill', isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.35)');
+          // Bottom shadow
+          const shGrad = defs.append('linearGradient')
+            .attr('id', `shsh-${si}`).attr('x1', '0%').attr('y1', '0%').attr('x2', '0%').attr('y2', '100%');
+          shGrad.append('stop').attr('offset', '0%').attr('stop-color', wood.shadow);
+          shGrad.append('stop').attr('offset', '100%').attr('stop-color', 'transparent');
+          svg.append('rect')
+            .attr('x', sideW).attr('y', boardY + shelfBoardH)
+            .attr('width', W - sideW * 2).attr('height', Math.max(4, shelfTotalH * 0.06))
+            .attr('fill', `url(#shsh-${si})`);
+        }
+
+        // --- SVG filters ---
+        // Subtle cloth/leather texture overlay
+        const texFilter = defs.append('filter')
+          .attr('id', 'book-tex').attr('x', '0%').attr('y', '0%')
+          .attr('width', '100%').attr('height', '100%');
+        texFilter.append('feTurbulence')
+          .attr('type', 'fractalNoise').attr('baseFrequency', '0.8 0.5')
+          .attr('numOctaves', 4).attr('seed', 7).attr('result', 'noise');
+        texFilter.append('feColorMatrix')
+          .attr('in', 'noise').attr('type', 'saturate').attr('values', '0').attr('result', 'gray');
+        texFilter.append('feBlend')
+          .attr('in', 'SourceGraphic').attr('in2', 'gray')
+          .attr('mode', isDark ? 'soft-light' : 'overlay')
+          .attr('result', 'textured');
+        texFilter.append('feComposite')
+          .attr('in', 'textured').attr('in2', 'SourceGraphic').attr('operator', 'in');
+
+        // Drop shadow for pulled-out books
+        const pullShadow = defs.append('filter')
+          .attr('id', 'book-shadow').attr('x', '-10%').attr('y', '-10%')
+          .attr('width', '130%').attr('height', '140%');
+        pullShadow.append('feDropShadow')
+          .attr('dx', 0).attr('dy', 3)
+          .attr('stdDeviation', 3)
+          .attr('flood-color', 'rgba(0,0,0,0.35)');
+
+        // --- Per-book rounded spine gradients ---
+        allBooks.forEach(d => {
+          const c = familyColors[d.family];
+          const grad = defs.append('linearGradient')
+            .attr('id', `spine-${d.id}`).attr('x1', '0%').attr('x2', '100%');
+          grad.append('stop').attr('offset', '0%').attr('stop-color', d3.color(c).darker(0.6));
+          grad.append('stop').attr('offset', '30%').attr('stop-color', d3.color(c).brighter(0.15));
+          grad.append('stop').attr('offset', '55%').attr('stop-color', d3.color(c).brighter(0.25));
+          grad.append('stop').attr('offset', '100%').attr('stop-color', d3.color(c).darker(0.8));
+        });
+
+        // --- Draw books ---
+        const gBooks = svg.append('g');
+
+        const bookGroups = gBooks.selectAll('g.book')
+          .data(allBooks, d => d.id)
+          .join('g')
+          .attr('class', 'book');
+
+        // Page-top colors
+        const pageColor = isDark ? '#968672' : '#d8ccb2';
+        const pageLineColor = isDark ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.10)';
+        const pageEdgeColor = isDark ? 'rgba(80,60,40,0.5)' : 'rgba(0,0,0,0.15)';
+
+        // Fixed cover thickness (same for every book)
+        const coverW = Math.max(2, W * 0.003);
+
+        bookGroups.each(function(d) {
+          const g = d3.select(this);
+          const h2 = bookHash(d.id, 2);
+          const h3 = bookHash(d.id, 5);
+
+          const coverColor = familyColors[d.family];
+          const coverDark = d3.color(coverColor).darker(0.4);
+
+          // Page-top strip: always visible (top-down perspective)
+          const pagesG = g.append('g').attr('class', 'book-pages');
+          const pth = pageTopBase;
+          // Pages trapezoid (cream, between the two covers)
+          const pts = [
+            [d.bx + coverW, d.by],
+            [d.bx + d.bw - coverW, d.by],
+            [d.bx + d.bw - coverW - pageInset, d.by - pth],
+            [d.bx + coverW + pageInset, d.by - pth]
+          ];
+          pagesG.append('polygon')
+            .attr('class', 'page-face')
+            .attr('points', pts.map(p => p.join(',')).join(' '))
+            .attr('fill', pageColor);
+          // Vertical page-edge lines
+          const pageW = d.bw - coverW * 2;
+          const nLines = Math.max(3, Math.round(pageW / 1.5));
+          for (let li = 0; li < nLines; li++) {
+            const xFrac = (li + 0.5) / nLines;
+            const lx = d.bx + coverW + pageW * xFrac;
+            pagesG.append('line')
+              .attr('class', 'page-line')
+              .attr('x1', lx).attr('x2', lx)
+              .attr('y1', d.by).attr('y2', d.by - pth)
+              .attr('stroke', pageLineColor).attr('stroke-width', 0.4);
+          }
+          // Left cover on page-top (trapezoid in book color)
+          pagesG.append('polygon')
+            .attr('class', 'cover-left')
+            .attr('points', [
+              [d.bx, d.by], [d.bx + coverW, d.by],
+              [d.bx + coverW + pageInset, d.by - pth], [d.bx + pageInset, d.by - pth]
+            ].map(p => p.join(',')).join(' '))
+            .attr('fill', coverDark);
+          // Right cover on page-top
+          pagesG.append('polygon')
+            .attr('class', 'cover-right')
+            .attr('points', [
+              [d.bx + d.bw - coverW, d.by], [d.bx + d.bw, d.by],
+              [d.bx + d.bw - pageInset, d.by - pth], [d.bx + d.bw - coverW - pageInset, d.by - pth]
+            ].map(p => p.join(',')).join(' '))
+            .attr('fill', coverDark);
+          // Front edge
+          pagesG.append('line')
+            .attr('class', 'page-edge')
+            .attr('x1', d.bx).attr('x2', d.bx + d.bw)
+            .attr('y1', d.by).attr('y2', d.by)
+            .attr('stroke', pageEdgeColor).attr('stroke-width', 1);
+
+          // Spine sub-group
+          const spine = g.append('g').attr('class', 'book-spine');
+
+          // Main spine body with rounded gradient + texture
+          spine.append('rect')
+            .attr('class', 'book-rect')
+            .attr('x', d.bx).attr('y', d.by)
+            .attr('width', d.bw).attr('height', d.bh)
+            .attr('rx', 0.5)
+            .attr('fill', `url(#spine-${d.id})`)
+            .attr('filter', 'url(#book-tex)');
+
+          // Cardboard cover edges on spine (left and right)
+          spine.append('rect')
+            .attr('x', d.bx).attr('y', d.by)
+            .attr('width', coverW).attr('height', d.bh)
+            .attr('fill', coverDark)
+            .style('pointer-events', 'none');
+          spine.append('rect')
+            .attr('x', d.bx + d.bw - coverW).attr('y', d.by)
+            .attr('width', coverW).attr('height', d.bh)
+            .attr('fill', coverDark)
+            .style('pointer-events', 'none');
+
+          // Spine groove lines
+          if (d.bw > 6) {
+            const grooveOff = d.bw * (0.12 + h2 * 0.06);
+            const grooveColor = isDark ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.1)';
+            [grooveOff, d.bw - grooveOff].forEach(gx => {
+              spine.append('line')
+                .attr('x1', d.bx + gx).attr('x2', d.bx + gx)
+                .attr('y1', d.by + 1).attr('y2', d.by + d.bh - 1)
+                .attr('stroke', grooveColor).attr('stroke-width', 0.5)
+                .style('pointer-events', 'none');
+            });
+          }
+
+          // Headband + tailband
+          const headbandH = Math.max(1.5, d.bh * 0.02);
+          spine.append('rect')
+            .attr('x', d.bx + 0.5).attr('y', d.by + 0.5)
+            .attr('width', d.bw - 1).attr('height', headbandH)
+            .attr('fill', isDark ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.4)')
+            .style('pointer-events', 'none');
+          spine.append('rect')
+            .attr('x', d.bx + 0.5).attr('y', d.by + d.bh - headbandH - 0.5)
+            .attr('width', d.bw - 1).attr('height', headbandH)
+            .attr('fill', isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.25)')
+            .style('pointer-events', 'none');
+
+          // Two decorative horizontal bands
+          if (d.bw > 8) {
+            const bandH = Math.max(1.5, d.bh * 0.04);
+            const upperY = d.by + d.bh * (0.22 + h3 * 0.08);
+            const lowerY = d.by + d.bh * (0.70 + h2 * 0.08);
+            const bandFill = isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.07)';
+            [upperY, lowerY].forEach(yy => {
+              spine.append('rect')
+                .attr('x', d.bx + 1).attr('y', yy)
+                .attr('width', d.bw - 2).attr('height', bandH)
+                .attr('fill', bandFill).style('pointer-events', 'none');
+            });
+          }
+
+          // Gilt/embossed spine text
+          if (d.bw >= 16) {
+            const fontSize = Math.min(d.bw * 0.42, 10, d.bh * 0.055);
+            if (fontSize >= 5) {
+              const maxLen = Math.floor(d.bh / (fontSize * 0.65));
+              const label = d.model;
+              const text = label.length > maxLen ? label.slice(0, maxLen - 1) + '\u2026' : label;
+              const tx = d.bx + d.bw / 2;
+              const ty = d.by + d.bh * 0.52;
+              const rot = `rotate(-90, ${tx}, ${ty})`;
+              spine.append('text')
+                .attr('x', tx + 0.5).attr('y', ty + 0.8)
+                .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+                .attr('transform', rot)
+                .attr('fill', isDark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.2)')
+                .attr('font-size', fontSize).attr('font-weight', 700)
+                .attr('letter-spacing', '0.03em')
+                .style('pointer-events', 'none')
+                .text(text);
+              spine.append('text')
+                .attr('x', tx).attr('y', ty)
+                .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+                .attr('transform', rot)
+                .attr('fill', isDark ? '#d4b87a' : '#8b7340')
+                .attr('fill-opacity', isDark ? 0.75 : 0.65)
+                .attr('font-size', fontSize).attr('font-weight', 700)
+                .attr('letter-spacing', '0.03em')
+                .style('pointer-events', 'none')
+                .text(text);
+            }
+          }
+        });
+
+        // --- Tilt transform: compress spine Y from bottom to simulate tilting forward ---
+        const tiltSy = 0.9;
+        function tiltTransform(d) {
+          const cx = d.bx + d.bw / 2;
+          const bot = d.by + d.bh;
+          return `translate(${cx}, ${bot}) scale(1, ${tiltSy}) translate(${-cx}, ${-bot})`;
+        }
+        // Where the compressed spine top ends up
+        function tiltedSpineTop(d) {
+          return d.by + d.bh - d.bh * tiltSy;
+        }
+
+        // --- Hover helpers: tilt spine + expand page-top ---
+        function updatePageTop(el, d, baseY, depth) {
+          const pg = el.select('.book-pages');
+          const cw = coverW;
+          // Pages (cream area between covers)
+          pg.select('.page-face').transition().duration(200)
+            .attr('points', [
+              [d.bx + cw, baseY], [d.bx + d.bw - cw, baseY],
+              [d.bx + d.bw - cw - pageInset, baseY - depth],
+              [d.bx + cw + pageInset, baseY - depth]
+            ].map(p => p.join(',')).join(' '));
+          // Left cover
+          pg.select('.cover-left').transition().duration(200)
+            .attr('points', [
+              [d.bx, baseY], [d.bx + cw, baseY],
+              [d.bx + cw + pageInset, baseY - depth], [d.bx + pageInset, baseY - depth]
+            ].map(p => p.join(',')).join(' '));
+          // Right cover
+          pg.select('.cover-right').transition().duration(200)
+            .attr('points', [
+              [d.bx + d.bw - cw, baseY], [d.bx + d.bw, baseY],
+              [d.bx + d.bw - pageInset, baseY - depth], [d.bx + d.bw - cw - pageInset, baseY - depth]
+            ].map(p => p.join(',')).join(' '));
+          // Vertical page lines
+          pg.selectAll('line.page-line').each(function() {
+            d3.select(this).transition().duration(200)
+              .attr('y1', baseY).attr('y2', baseY - depth);
+          });
+          pg.select('line.page-edge').transition().duration(200)
+            .attr('y1', baseY).attr('y2', baseY);
+        }
+
+        function hoverIn(sel) {
+          sel.each(function(d) {
+            const el = d3.select(this);
+            el.raise();
+            el.select('.book-spine')
+              .transition().duration(200)
+              .attr('transform', tiltTransform(d))
+              .attr('filter', 'url(#book-shadow)');
+            updatePageTop(el, d, tiltedSpineTop(d), pageTopHover);
+          });
+        }
+
+        function hoverOut(sel) {
+          sel.each(function(d) {
+            const el = d3.select(this);
+            el.select('.book-spine')
+              .transition().duration(200)
+              .attr('transform', null)
+              .attr('filter', null);
+            updatePageTop(el, d, d.by, pageTopBase);
+          });
+        }
+
+        // --- Overlay text ---
+        const cx = W / 2;
+        const megaFS = Math.min(W * 0.10, H * 0.18, 100);
+        const megaY = topPad + shelfZoneH * 0.44;
+        const noPtr = el => el.style('pointer-events', 'none');
+
+        noPtr(svg.append('text')
+          .attr('class', 'overlay-text')
+          .attr('x', cx).attr('y', megaY)
+          .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+          .attr('fill', isDark ? 'rgba(255,255,255,0.88)' : 'rgba(26,26,26,0.88)')
+          .attr('font-size', megaFS).attr('font-weight', 900)
+          .attr('letter-spacing', '-0.04em')
+          .text('1T+'));
+
+        const labelFS = Math.max(9, megaFS * 0.14);
+        noPtr(svg.append('text')
+          .attr('class', 'overlay-text')
+          .attr('x', cx).attr('y', megaY + megaFS * 0.46)
+          .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+          .attr('fill', isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.4)')
+          .attr('font-size', labelFS).attr('font-weight', 600)
+          .attr('letter-spacing', '0.18em')
+          .text('TOKENS REPHRASED'));
+
+        // --- Bottom zone: stats + legend ---
+        const bottomY = shelfBottom;
+        const bottomH = H - bottomY;
+
+        const subFS = Math.max(8, Math.min(11, W * 0.011));
+        const totalDocsB = (totalDocsM / 1000).toFixed(2);
+        noPtr(svg.append('text')
+          .attr('class', 'overlay-text')
+          .attr('x', cx).attr('y', bottomY + bottomH * 0.32)
+          .attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+          .attr('fill', isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.38)')
+          .attr('font-size', subFS).attr('font-weight', 500)
+          .attr('letter-spacing', '0.14em')
+          .text(`${numExperiments} EXPERIMENTS \u00B7 ${totalDocsB}B DOCUMENTS \u00B7 1 PAGE \u2248 100M TOKENS`));
+
+        // Legend
+        const familyCounts = {};
+        data.forEach(d => { familyCounts[d.family] = (familyCounts[d.family] || 0) + 1; });
+        const sortedFamilies = Object.entries(familyCounts).sort((a, b) => b[1] - a[1]);
+        const legFS = Math.max(9, Math.min(12, W * 0.012));
+        const dotR = Math.max(3, legFS * 0.38);
+        const legY = bottomY + bottomH * 0.7;
+
+        const legG = svg.append('g');
+        let tw = 0;
+        sortedFamilies.forEach(([fam, count]) => {
+          tw += dotR * 2 + 4 + (fam.length + String(count).length + 3) * legFS * 0.55 + 14;
+        });
+        tw -= 14;
+        let lx = cx - tw / 2;
+
+        sortedFamilies.forEach(([fam, count]) => {
+          const ig = legG.append('g').style('cursor', 'pointer');
+          ig.append('circle')
+            .attr('cx', lx + dotR).attr('cy', legY)
+            .attr('r', dotR).attr('fill', familyColors[fam]).attr('fill-opacity', 0.7);
+          const t = ig.append('text')
+            .attr('x', lx + dotR * 2 + 4).attr('y', legY)
+            .attr('dominant-baseline', 'middle')
+            .attr('fill', isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)')
+            .attr('font-size', legFS).attr('font-weight', 500)
+            .text(`${fam} (${count})`);
+
+          ig.on('mouseenter', () => {
+            gBooks.selectAll('g.book').each(function(d) {
+              if (d.family === fam) hoverIn(d3.select(this));
+            });
+          }).on('mouseleave', () => {
+            gBooks.selectAll('g.book').each(function(d) {
+              if (d.family === fam) hoverOut(d3.select(this));
+            });
+          });
+
+          lx += dotR * 2 + 4 + t.node().getComputedTextLength() + 14;
+        });
+
+        // --- Hover: tilt book forward + reveal more page-top + tooltip ---
+        bookGroups
+          .on('mouseenter', function(event, d) {
+            const g = d3.select(this);
+            hoverIn(g);
+
+            const c = familyColors[d.family];
+            const dc = d.dclm >= 0 ? '#16a34a' : '#dc2626';
+            const ec = d.edu >= 0 ? '#16a34a' : '#dc2626';
+            const ac = d.aggDiff != null ? (d.aggDiff >= 0 ? '#16a34a' : '#dc2626') : null;
+            const aggRow = d.aggDiff != null
+              ? `<span style="opacity:.35">\u0394 Macro</span><span style="color:${ac}">${fmtDelta(d.aggDiff, d.aggBase)}</span>` : '';
+
+            tip.innerHTML =
+              `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">` +
+              `<span style="width:8px;height:8px;border-radius:50%;background:${c};display:inline-block"></span>` +
+              `<span style="font-weight:700;font-size:1.05em;color:var(--text-color)">${d.model}</span></div>` +
+              `<div style="opacity:.4;font-size:.88em;margin-bottom:7px">${d.prompt} \u00B7 ${d.cat} \u00B7 ${d.source}</div>` +
+              `<div style="display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:.9em">` +
+              `<span style="opacity:.35">Output</span><span style="font-weight:600;color:var(--text-color)">${d.outputHuman} tokens</span>` +
+              `<span style="opacity:.35">Input</span><span>${d.inputHuman}</span>` +
+              `<span style="opacity:.35">GPU time</span><span>${d.gpuTime}</span>` +
+              `<span style="opacity:.35">Docs</span><span>${d.docsM.toFixed(1)}M</span>` +
+              `<span style="opacity:.35">DCLM</span><span style="color:${dc}">${fmtDelta(d.dclm, d.dclmBase)}</span>` +
+              `<span style="opacity:.35">Edu</span><span style="color:${ec}">${fmtDelta(d.edu, d.eduBase)}</span>` +
+              aggRow + `</div>`;
+            tip.style.opacity = '1';
+          })
+          .on('mousemove', function(event) {
+            const r = container.getBoundingClientRect();
+            let tx = event.clientX - r.left + 14;
+            let ty = event.clientY - r.top - 10;
+            if (tx + 280 > W) tx = event.clientX - r.left - 290;
+            if (ty < 8) ty = 8;
+            tip.style.left = tx + 'px';
+            tip.style.top = ty + 'px';
+          })
+          .on('mouseleave', function() {
+            hoverOut(d3.select(this));
+            tip.style.opacity = '0';
+          });
+      };
+
+      if (window.ResizeObserver) {
+        new ResizeObserver(() => render()).observe(container);
+      } else {
+        window.addEventListener('resize', render);
+      }
+      render();
+
+      new MutationObserver(() => render()).observe(
+        document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }
+      );
+    }).catch(err => {
+      container.innerHTML = `<pre style="color:red;padding:12px">${err.message}</pre>`;
+    });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+  } else { ensureD3(bootstrap); }
+})();
+</script>

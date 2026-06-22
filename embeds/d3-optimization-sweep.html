@@ -1,0 +1,493 @@
+<div class="d3-optimization-sweep"></div>
+<style>
+  .d3-optimization-sweep { position: relative; }
+  .d3-optimization-sweep .controls {
+    display: flex;
+    gap: 16px;
+    align-items: flex-end;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    margin: 10px 0 0 0;
+  }
+  .d3-optimization-sweep .controls .control-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .d3-optimization-sweep .controls label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-color);
+  }
+  .d3-optimization-sweep .controls select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 6px 28px 6px 10px;
+    background-color: var(--surface-bg);
+    color: var(--text-color);
+    font-size: 13px;
+    line-height: 1.2;
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1.41 1.59L6 6.17l4.59-4.58L12 3 6 9 0 3z' fill='%23999'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+  }
+  .d3-optimization-sweep .controls select:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+  .d3-optimization-sweep .legend {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 8px 0 0 0;
+  }
+  .d3-optimization-sweep .legend .legend-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-color);
+  }
+  .d3-optimization-sweep .legend .legend-section {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+  }
+  .d3-optimization-sweep .legend .item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-color);
+  }
+  .d3-optimization-sweep .legend .swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+    flex-shrink: 0;
+  }
+  .d3-optimization-sweep .legend .shape-swatch {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+  .d3-optimization-sweep .d3-tooltip {
+    position: absolute;
+    top: 0px;
+    left: 0px;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.35;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg);
+    color: var(--text-color);
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    opacity: 0;
+    transition: opacity .12s ease;
+    text-align: left;
+    max-width: 320px;
+    z-index: 10;
+  }
+  .d3-optimization-sweep .d3-tooltip .tip-label { color: var(--muted-color); }
+  .d3-optimization-sweep .d3-tooltip .tip-val { font-weight: 600; }
+  .d3-optimization-sweep .d3-tooltip .tip-regression { color: #e05252; }
+  .d3-optimization-sweep .y-label-text {
+    font-size: 11px;
+    cursor: default;
+  }
+  .d3-optimization-sweep .speedup-label {
+    font-size: 10px;
+    font-weight: 600;
+  }
+</style>
+<script>
+  (() => {
+    const ensureD3 = (cb) => {
+      if (window.d3 && typeof window.d3.select === 'function') return cb();
+      let s = document.getElementById('d3-cdn-script');
+      if (!s) {
+        s = document.createElement('script');
+        s.id = 'd3-cdn-script';
+        s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js';
+        document.head.appendChild(s);
+      }
+      const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+      s.addEventListener('load', onReady, { once: true });
+      if (window.d3) onReady();
+    };
+
+    const bootstrap = () => {
+      const scriptEl = document.currentScript;
+      let container = scriptEl ? scriptEl.previousElementSibling : null;
+      if (!(container && container.classList && container.classList.contains('d3-optimization-sweep'))) {
+        const cs = Array.from(document.querySelectorAll('.d3-optimization-sweep'))
+          .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+        container = cs[cs.length - 1] || null;
+      }
+      if (!container) return;
+      if (container.dataset) {
+        if (container.dataset.mounted === 'true') return;
+        container.dataset.mounted = 'true';
+      }
+      container.style.position = container.style.position || 'relative';
+
+      // ── Data ──
+      const DATA = [
+        { model: 'Qwen3-0.6B', family: 'Qwen3', baseTp: 1, baseTps: 13527, t0Tps: 14069, t0Speedup: 1.04, t0Params: 'mns=512', t1Tps: 12330, t1Speedup: 0.91, t1Params: 'mns=512, gmu=95', bestSpeedup: 1.04 },
+        { model: 'Qwen3-1.7B', family: 'Qwen3', baseTp: 1, baseTps: 11710, t0Tps: 12313, t0Speedup: 1.05, t0Params: 'mnbt=32768', t1Tps: 11262, t1Speedup: 0.96, t1Params: 'mnbt=32768, gmu=95', bestSpeedup: 1.05 },
+        { model: 'Qwen3-14B', family: 'Qwen3', baseTp: 1, baseTps: 4414, t0Tps: 4549, t0Speedup: 1.03, t0Params: 'tp=2', t1Tps: 4158, t1Speedup: 0.94, t1Params: 'tp=2', bestSpeedup: 1.03 },
+        { model: 'Qwen3-30B-A3B', family: 'Qwen3', baseTp: 1, baseTps: 2977, t0Tps: 5310, t0Speedup: 1.78, t0Params: 'tp=2, mns=512, mnbt=32768', t1Tps: 5064, t1Speedup: 1.70, t1Params: 'tp=2, mns=512, mnbt=32768, gmu=95', bestSpeedup: 1.78 },
+        { model: 'Qwen3-32B', family: 'Qwen3', baseTp: 4, baseTps: 1987, t0Tps: 2072, t0Speedup: 1.04, t0Params: 'mns=512, mnbt=16384', t1Tps: 2078, t1Speedup: 1.05, t1Params: 'mns=512, mnbt=16384, gmu=95', bestSpeedup: 1.05 },
+        { model: 'Qwen3-4B', family: 'Qwen3', baseTp: 1, baseTps: 7919, t0Tps: 8086, t0Speedup: 1.02, t0Params: 'mnbt=32768', t1Tps: 7751, t1Speedup: 0.98, t1Params: 'mnbt=32768, gmu=95', bestSpeedup: 1.02 },
+        { model: 'Qwen3-8B', family: 'Qwen3', baseTp: 1, baseTps: 6338, t0Tps: 6338, t0Speedup: 1.00, t0Params: '(baseline)', t1Tps: 6443, t1Speedup: 1.02, t1Params: 'gmu=95', bestSpeedup: 1.02 },
+        { model: 'Qwen3-Next-80B-A3B', family: 'Qwen3', baseTp: 4, baseTps: 2034, t0Tps: 2678, t0Speedup: 1.32, t0Params: 'mns=512', t1Tps: 2481, t1Speedup: 1.22, t1Params: 'mns=512', bestSpeedup: 1.32 },
+        { model: 'SmolLM2-1.7B', family: 'SmolLM2', baseTp: 1, baseTps: 5255, t0Tps: 5437, t0Speedup: 1.03, t0Params: 'mns=2048, mnbt=32768', t1Tps: 9220, t1Speedup: 1.75, t1Params: 'mns=2048, mnbt=32768, gmu=95, spec=suffix_32', bestSpeedup: 1.75 },
+        { model: 'SmolLM2-135M', family: 'SmolLM2', baseTp: 1, baseTps: 28391, t0Tps: 31186, t0Speedup: 1.10, t0Params: 'mns=512, mnbt=32768', t1Tps: 45540, t1Speedup: 1.60, t1Params: 'mns=512, mnbt=32768, spec=ngram_6', bestSpeedup: 1.60 },
+        { model: 'SmolLM2-360M', family: 'SmolLM2', baseTp: 1, baseTps: 17887, t0Tps: 18844, t0Speedup: 1.05, t0Params: 'mns=512', t1Tps: 23996, t1Speedup: 1.34, t1Params: 'mns=512, spec=ngram_6', bestSpeedup: 1.34 },
+        { model: 'Gemma-3-12B', family: 'Gemma3', baseTp: 1, baseTps: 2999, t0Tps: 2999, t0Speedup: 1.00, t0Params: '(baseline)', t1Tps: 3046, t1Speedup: 1.02, t1Params: 'gmu=95', bestSpeedup: 1.02 },
+        { model: 'Gemma-3-1B', family: 'Gemma3', baseTp: 1, baseTps: 14838, t0Tps: 16762, t0Speedup: 1.13, t0Params: 'mns=4096, mnbt=32768', t1Tps: 13832, t1Speedup: 0.93, t1Params: 'mns=4096, mnbt=32768, gmu=95', bestSpeedup: 1.13 },
+        { model: 'Gemma-3-270M', family: 'Gemma3', baseTp: 1, baseTps: 22996, t0Tps: 23585, t0Speedup: 1.03, t0Params: 'mnbt=32768', t1Tps: 21030, t1Speedup: 0.91, t1Params: 'mnbt=32768', bestSpeedup: 1.03 },
+        { model: 'Gemma-3-27B', family: 'Gemma3', baseTp: 2, baseTps: 1724, t0Tps: 1724, t0Speedup: 1.00, t0Params: '(baseline)', t1Tps: 1671, t1Speedup: 0.97, t1Params: 'gmu=95', bestSpeedup: 1.00 },
+        { model: 'Gemma-3-4B', family: 'Gemma3', baseTp: 1, baseTps: 8501, t0Tps: 9253, t0Speedup: 1.09, t0Params: 'mns=1024, mnbt=32768', t1Tps: 8361, t1Speedup: 0.98, t1Params: 'mns=1024, mnbt=32768', bestSpeedup: 1.09 },
+        { model: 'GPT-OSS-120B', family: 'GPT-OSS', baseTp: 1, baseTps: 3138, t0Tps: 6117, t0Speedup: 1.95, t0Params: 'tp=2, mns=1024, mnbt=32768', t1Tps: 5450, t1Speedup: 1.74, t1Params: 'tp=2, mns=1024, mnbt=32768', bestSpeedup: 1.95 },
+        { model: 'GPT-OSS-20B', family: 'GPT-OSS', baseTp: 1, baseTps: 12432, t0Tps: 14671, t0Speedup: 1.18, t0Params: 'mns=512, mnbt=16384', t1Tps: 13004, t1Speedup: 1.05, t1Params: 'mns=512, mnbt=16384', bestSpeedup: 1.18 },
+      ];
+
+      const FAMILIES = ['Qwen3', 'SmolLM2', 'Gemma3', 'GPT-OSS'];
+      const TIERS = ['Baseline', 'Tier 0', 'Tier 1'];
+      const SHAPE_SIZE = 42;
+      const TIER_Y_OFFSET = { 'Baseline': -0.38, 'Tier 0': 0, 'Tier 1': 0.38 };
+      const margin = { top: 20, right: 40, bottom: 40, left: 130 };
+
+      // ── Colors & shapes ──
+      const FAMILY_COLORS = { 'Qwen3': '#e07b54', 'SmolLM2': '#e06b9e', 'Gemma3': '#5b9bd5', 'GPT-OSS': '#8bc474' };
+      const familyPalette = FAMILIES.map(f => FAMILY_COLORS[f] || '#999');
+      const familyColor = (family) => FAMILY_COLORS[family] || '#999';
+
+      const shapeGenerators = {
+        'Baseline': d3.symbol().type(d3.symbolCircle),
+        'Tier 0': d3.symbol().type(d3.symbolSquare),
+        'Tier 1': d3.symbol().type(d3.symbolTriangle),
+      };
+
+      // ── Tooltip ──
+      let tip = container.querySelector('.d3-tooltip');
+      let tipInner;
+      if (!tip) {
+        tip = document.createElement('div'); tip.className = 'd3-tooltip';
+        tipInner = document.createElement('div'); tipInner.className = 'd3-tooltip__inner'; tipInner.style.textAlign = 'left';
+        tip.appendChild(tipInner); container.appendChild(tip);
+      } else { tipInner = tip.querySelector('.d3-tooltip__inner') || tip; }
+
+      function showTip(html, mx, my) {
+        tipInner.innerHTML = html;
+        const cw = container.clientWidth;
+        let tx = mx + 14, ty = my - 10;
+        if (tx + (tip.offsetWidth || 200) > cw - 8) tx = mx - (tip.offsetWidth || 200) - 14;
+        if (ty + (tip.offsetHeight || 100) > container.clientHeight) ty = container.clientHeight - (tip.offsetHeight || 100) - 4;
+        if (ty < 0) ty = 4;
+        tip.style.transform = `translate(${tx}px, ${ty}px)`;
+        tip.style.opacity = '1';
+      }
+      function hideTip() {
+        tip.style.opacity = '0';
+        tip.style.transform = 'translate(-9999px, -9999px)';
+      }
+
+      // ── Shared tooltip event handlers ──
+      function attachTipEvents(sel, opacityFn) {
+        sel
+          .attr('cursor', 'pointer')
+          .on('mouseenter', function (event, d) {
+            d3.select(this).attr('opacity', 1);
+            const [mx, my] = d3.pointer(event, container);
+            showTip(buildTooltip(d), mx, my);
+          })
+          .on('mousemove', function (event) {
+            const [mx, my] = d3.pointer(event, container);
+            tip.style.transform = `translate(${mx + 14}px, ${my - 10}px)`;
+          })
+          .on('mouseleave', function (event, d) {
+            d3.select(this).attr('opacity', opacityFn(d));
+            hideTip();
+          });
+      }
+
+      // ── Shared axis styling ──
+      function styleAxis(g) {
+        g.selectAll('path, line').attr('stroke', 'var(--axis-color)');
+        g.selectAll('text').attr('fill', 'var(--tick-color)').style('font-size', '11px');
+      }
+
+      // ── SVG ──
+      const svg = d3.select(container).append('svg').attr('width', '100%').style('display', 'block');
+      const gRoot = svg.append('g');
+
+      // ── State ──
+      const state = { metric: 'speedup', sort: 'speedup' };
+
+      function sortedData() {
+        const d = [...DATA];
+        if (state.sort === 'speedup') d.sort((a, b) => b.bestSpeedup - a.bestSpeedup);
+        else if (state.sort === 'baseline') d.sort((a, b) => b.baseTps - a.baseTps);
+        else if (state.sort === 'family') {
+          d.sort((a, b) => {
+            const fi = FAMILIES.indexOf(a.family) - FAMILIES.indexOf(b.family);
+            return fi !== 0 ? fi : b.bestSpeedup - a.bestSpeedup;
+          });
+        }
+        return d;
+      }
+
+      // ── X axis tick format helper ──
+      function xTickFormat() {
+        return state.metric === 'throughput'
+          ? (d => d >= 1000 ? (d / 1000) + 'k' : d)
+          : (d => d.toFixed(1) + 'x');
+      }
+
+      // ── Render ──
+      function render() {
+        const iw = (container.clientWidth || 800) - margin.left - margin.right;
+        const ih = Math.max(400, DATA.length * 36 + margin.top + margin.bottom) - margin.top - margin.bottom;
+        svg.attr('width', container.clientWidth || 800).attr('height', ih + margin.top + margin.bottom);
+        gRoot.attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const data = sortedData();
+        const yScale = d3.scaleBand().domain(data.map(d => d.model)).range([0, ih]).padding(0.35);
+        const bandH = yScale.bandwidth();
+
+        // X scale
+        let xScale;
+        if (state.metric === 'throughput') {
+          const maxTps = d3.max(data, d => Math.max(d.baseTps, d.t0Tps, d.t1Tps));
+          xScale = d3.scaleLinear().domain([0, maxTps * 1.08]).range([0, iw]).nice();
+        } else {
+          const maxSpd = d3.max(data, d => Math.max(d.t0Speedup, d.t1Speedup));
+          const minSpd = d3.min(data, d => Math.min(d.t0Speedup, d.t1Speedup));
+          xScale = d3.scaleLinear().domain([Math.min(0.85, minSpd - 0.05), Math.max(2.05, maxSpd + 0.1)]).range([0, iw]).nice();
+        }
+
+        // Grid
+        gRoot.selectAll('.grid').data([0]).join('g').attr('class', 'grid')
+          .call(g => {
+            g.selectAll('line').data(xScale.ticks(8), d => d).join('line')
+              .attr('x1', d => xScale(d)).attr('x2', d => xScale(d))
+              .attr('y1', 0).attr('y2', ih)
+              .attr('stroke', 'var(--grid-color)').attr('stroke-width', 1);
+          });
+
+        // X axes (bottom + top)
+        const fmt = xTickFormat();
+        gRoot.selectAll('.axis-x').data([0]).join('g').attr('class', 'axis-x')
+          .attr('transform', `translate(0,${ih})`)
+          .call(d3.axisBottom(xScale).ticks(8).tickFormat(fmt)).call(styleAxis);
+        gRoot.selectAll('.axis-x-top').data([0]).join('g').attr('class', 'axis-x-top')
+          .call(d3.axisTop(xScale).ticks(8).tickFormat(fmt)).call(styleAxis);
+
+        // X axis label
+        const xLabel = state.metric === 'throughput' ? 'Tokens per second per GPU' : 'Speedup vs baseline';
+        gRoot.selectAll('.x-label').data([0]).join('text').attr('class', 'x-label')
+          .attr('x', iw / 2).attr('y', ih + margin.bottom - 4)
+          .attr('text-anchor', 'middle').attr('fill', 'var(--muted-color)')
+          .attr('font-size', 11).text(xLabel);
+
+        // Y axis (model names)
+        gRoot.selectAll('.axis-y').data([0]).join('g').attr('class', 'axis-y')
+          .call(g => {
+            g.selectAll('text.y-label-text').data(data, d => d.model).join(
+              enter => enter.append('text').attr('class', 'y-label-text')
+                .attr('x', -8).attr('dy', '0.35em').attr('text-anchor', 'end'),
+              update => update,
+              exit => exit.remove()
+            )
+              .attr('y', d => yScale(d.model) + bandH / 2)
+              .attr('fill', d => familyColor(d.family))
+              .text(d => d.model);
+          });
+
+        // Reference line at 1.0x in speedup mode
+        gRoot.selectAll('.ref-line').data(state.metric === 'speedup' ? [1.0] : []).join('line')
+          .attr('class', 'ref-line')
+          .attr('x1', d => xScale(d)).attr('x2', d => xScale(d))
+          .attr('y1', 0).attr('y2', ih)
+          .attr('stroke', 'var(--text-color)').attr('stroke-width', 1.5)
+          .attr('stroke-dasharray', '4,3').attr('opacity', 0.5);
+
+        // View-specific elements
+        if (state.metric === 'throughput') {
+          gRoot.selectAll('.speedup-bar').remove();
+          renderThroughput(data, xScale, yScale, bandH);
+        } else {
+          gRoot.selectAll('.conn-line').remove();
+          gRoot.selectAll('.dot').remove();
+          renderSpeedup(data, xScale, yScale, bandH);
+        }
+
+        // Speedup annotation (shared between both views)
+        gRoot.selectAll('.speedup-label').data(data, d => d.model).join('text')
+          .attr('class', 'speedup-label')
+          .attr('x', iw + 6)
+          .attr('y', d => yScale(d.model) + bandH / 2)
+          .attr('dy', '0.35em')
+          .attr('fill', 'var(--muted-color)')
+          .text(d => d.bestSpeedup.toFixed(2) + 'x');
+      }
+
+      function renderThroughput(data, xScale, yScale, bandH) {
+        // Connecting lines between the three staggered dots
+        const lineGen = d3.line().x(p => p.x).y(p => p.y);
+        const connData = data.map(d => {
+          const cy = yScale(d.model) + bandH / 2;
+          return {
+            model: d.model, family: d.family,
+            points: TIERS.map((tier, i) => ({
+              x: xScale([d.baseTps, d.t0Tps, d.t1Tps][i]),
+              y: cy + TIER_Y_OFFSET[tier] * bandH,
+            })),
+          };
+        });
+        gRoot.selectAll('.conn-line').data(connData, d => d.model).join('path')
+          .attr('class', 'conn-line')
+          .attr('d', d => lineGen(d.points))
+          .attr('fill', 'none')
+          .attr('stroke', d => familyColor(d.family))
+          .attr('stroke-width', 1.5).attr('opacity', 0.35);
+
+        // Dots: 3 per model with vertical stagger
+        const dots = [];
+        data.forEach(d => {
+          const cy = yScale(d.model) + bandH / 2;
+          const vals = [d.baseTps, d.t0Tps, d.t1Tps];
+          TIERS.forEach((tier, i) => {
+            dots.push({ ...d, tier, val: vals[i], cx: xScale(vals[i]), cy: cy + TIER_Y_OFFSET[tier] * bandH });
+          });
+        });
+
+        const dotSel = gRoot.selectAll('.dot').data(dots, d => d.model + '-' + d.tier).join('path')
+          .attr('class', 'dot')
+          .attr('d', d => shapeGenerators[d.tier].size(SHAPE_SIZE)())
+          .attr('transform', d => `translate(${d.cx},${d.cy})`)
+          .attr('fill', d => familyColor(d.family))
+          .attr('stroke', 'none')
+          .attr('opacity', 0.9);
+        attachTipEvents(dotSel, () => 0.9);
+      }
+
+      function renderSpeedup(data, xScale, yScale, bandH) {
+        const barH = bandH * 0.38;
+        const barData = [];
+        data.forEach(d => {
+          const baseY = yScale(d.model);
+          barData.push({ ...d, tier: 'Tier 0', val: d.t0Speedup, y: baseY + bandH * 0.12, h: barH });
+          barData.push({ ...d, tier: 'Tier 1', val: d.t1Speedup, y: baseY + bandH * 0.5, h: barH });
+        });
+
+        const oneX = xScale(1.0);
+        const barSel = gRoot.selectAll('.speedup-bar').data(barData, d => d.model + '-' + d.tier).join('rect')
+          .attr('class', 'speedup-bar')
+          .attr('x', d => d.val >= 1.0 ? oneX : xScale(d.val))
+          .attr('y', d => d.y)
+          .attr('width', d => Math.abs(xScale(d.val) - oneX))
+          .attr('height', d => d.h)
+          .attr('rx', 2)
+          .attr('fill', d => familyColor(d.family))
+          .attr('opacity', d => d.tier === 'Tier 0' ? 0.9 : 0.55)
+          .attr('stroke', d => d.val < 1.0 ? '#e05252' : 'none')
+          .attr('stroke-width', d => d.val < 1.0 ? 1 : 0);
+        attachTipEvents(barSel, d => d.tier === 'Tier 0' ? 0.9 : 0.55);
+      }
+
+      function buildTooltip(d) {
+        const fmt = (v) => v.toLocaleString();
+        const spd = (v) => v.toFixed(2) + 'x';
+        const cls = (v) => v < 1.0 ? 'tip-regression' : 'tip-val';
+        return `<div style="margin-bottom:4px"><strong>${d.model}</strong> <span class="tip-label">(${d.family})</span></div>`
+          + `<div><span class="tip-label">Baseline:</span> <span class="tip-val">${fmt(d.baseTps)}</span> tps/gpu <span class="tip-label">(tp=${d.baseTp})</span></div>`
+          + `<div><span class="tip-label">Tier 0:</span> <span class="${cls(d.t0Speedup)}">${fmt(d.t0Tps)}</span> tps/gpu <span class="${cls(d.t0Speedup)}">${spd(d.t0Speedup)}</span></div>`
+          + `<div style="font-size:10px;color:var(--muted-color);margin-left:8px">${d.t0Params}</div>`
+          + `<div><span class="tip-label">Tier 1:</span> <span class="${cls(d.t1Speedup)}">${fmt(d.t1Tps)}</span> tps/gpu <span class="${cls(d.t1Speedup)}">${spd(d.t1Speedup)}</span></div>`
+          + `<div style="font-size:10px;color:var(--muted-color);margin-left:8px">${d.t1Params}</div>`;
+      }
+
+      // ── Controls ──
+      function makeSelect(id, label, options, initial, onChange) {
+        const group = document.createElement('div'); group.className = 'control-group';
+        const lbl = document.createElement('label'); lbl.textContent = label; lbl.setAttribute('for', id);
+        const sel = document.createElement('select'); sel.id = id;
+        options.forEach(([v, t]) => {
+          const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o);
+        });
+        sel.value = initial;
+        sel.addEventListener('change', () => onChange(sel.value));
+        group.appendChild(lbl); group.appendChild(sel);
+        return group;
+      }
+
+      const controls = document.createElement('div'); controls.className = 'controls';
+      controls.appendChild(makeSelect('metric-sel-optsweep', 'Metric',
+        [['throughput', 'Throughput'], ['speedup', 'Speedup']], state.metric,
+        v => { state.metric = v; render(); }));
+      controls.appendChild(makeSelect('sort-sel-optsweep', 'Sort',
+        [['speedup', 'By Best Speedup'], ['baseline', 'By Baseline Throughput'], ['family', 'By Model Family']], state.sort,
+        v => { state.sort = v; render(); }));
+      container.appendChild(controls);
+
+      // ── Legend ──
+      const legend = document.createElement('div'); legend.className = 'legend';
+      const tierTitle = document.createElement('div'); tierTitle.className = 'legend-title'; tierTitle.textContent = 'Legend';
+      legend.appendChild(tierTitle);
+
+      // Tier shapes
+      const tierSection = document.createElement('div'); tierSection.className = 'legend-section';
+      const svgNS = 'http://www.w3.org/2000/svg';
+      TIERS.forEach(tier => {
+        const item = document.createElement('span'); item.className = 'item';
+        const shapeSvg = document.createElementNS(svgNS, 'svg');
+        shapeSvg.setAttribute('width', '14'); shapeSvg.setAttribute('height', '14');
+        shapeSvg.setAttribute('viewBox', '-8 -8 16 16'); shapeSvg.style.display = 'block';
+        const path = document.createElementNS(svgNS, 'path');
+        path.setAttribute('d', shapeGenerators[tier].size(SHAPE_SIZE)());
+        path.setAttribute('fill', 'var(--text-color)');
+        shapeSvg.appendChild(path);
+        const swWrap = document.createElement('span'); swWrap.className = 'shape-swatch'; swWrap.appendChild(shapeSvg);
+        const txt = document.createElement('span'); txt.textContent = tier;
+        item.appendChild(swWrap); item.appendChild(txt); tierSection.appendChild(item);
+      });
+      legend.appendChild(tierSection);
+
+      // Family colors
+      const famSection = document.createElement('div'); famSection.className = 'legend-section'; famSection.style.marginTop = '4px';
+      FAMILIES.forEach((fam, i) => {
+        const item = document.createElement('span'); item.className = 'item';
+        const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = familyPalette[i];
+        const txt = document.createElement('span'); txt.textContent = fam;
+        item.appendChild(sw); item.appendChild(txt); famSection.appendChild(item);
+      });
+      legend.appendChild(famSection);
+      container.appendChild(legend);
+
+      // ── Initial render + resize ──
+      render();
+      if (window.ResizeObserver) {
+        new ResizeObserver(() => render()).observe(container);
+      } else {
+        window.addEventListener('resize', render);
+      }
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+    } else {
+      ensureD3(bootstrap);
+    }
+  })();
+</script>

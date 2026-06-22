@@ -1,0 +1,521 @@
+<div class="d3-verbosity" style="width:100%;margin:10px 0;aspect-ratio:2.2/1;min-height:320px;"></div>
+<script>
+    (() => {
+        const ensureD3 = (cb) => {
+            if (window.d3 && typeof window.d3.select === 'function') return cb();
+            let s = document.getElementById('d3-cdn-script');
+            if (!s) {
+                s = document.createElement('script');
+                s.id = 'd3-cdn-script';
+                s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js';
+                document.head.appendChild(s);
+            }
+            const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+            s.addEventListener('load', onReady, { once: true });
+            if (window.d3) onReady();
+        };
+
+        const bootstrap = () => {
+            const scriptEl = document.currentScript;
+            let container = scriptEl ? scriptEl.previousElementSibling : null;
+            if (!(container && container.classList && container.classList.contains('d3-verbosity'))) {
+                const cs = Array.from(document.querySelectorAll('.d3-verbosity'))
+                    .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+                container = cs[cs.length - 1] || null;
+            }
+            if (!container) return;
+            if (container.dataset.mounted === 'true') return;
+            container.dataset.mounted = 'true';
+
+            // Read data path from HtmlEmbed attribute
+            let mountEl = container;
+            while (mountEl && !mountEl.getAttribute?.('data-datafiles')) mountEl = mountEl.parentElement;
+            const dataAttr = mountEl?.getAttribute?.('data-datafiles');
+            const dataPaths = dataAttr
+                ? [dataAttr.includes('/') ? dataAttr : `/data/${dataAttr}`]
+                : ['/data/rephrasing_metadata.json', './assets/data/rephrasing_metadata.json'];
+
+            const fetchFirst = async (paths) => {
+                for (const p of paths) {
+                    try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return r.json(); } catch(_) {}
+                }
+                throw new Error('Data not found');
+            };
+
+            fetchFirst(dataPaths).then(data => buildChart(data)).catch(err => {
+                container.innerHTML = `<pre style="color:red;padding:12px;">Error loading data: ${err.message}</pre>`;
+            });
+
+            function buildChart(rawData) {
+                // ═══════════════════════════════════════════════════════════
+                // PARSE JSON into chart-ready objects
+                // ═══════════════════════════════════════════════════════════
+                const SOURCE_MAP = {
+                    'fineweb-edu-hq-20BT': 'FW-Edu HQ',
+                    'fineweb-edu-lq-20BT': 'FW-Edu LQ',
+                    'dclm-37BT': 'DCLM',
+                    'cosmopedia-25BT': 'Cosmopedia'
+                };
+                const PROMPT_LABELS = {
+                    'article': 'Article', 'commentary': 'Commentary', 'discussion': 'Discussion',
+                    'faq': 'FAQ', 'math': 'Math', 'table': 'Table', 'tutorial': 'Tutorial',
+                    'distill': 'Distill', 'diverse_qa_pairs': 'Diverse QA',
+                    'extract_knowledge': 'Extract Knowledge', 'knowledge_list': 'Knowledge List',
+                    'wikipedia_style_rephrasing': 'Wikipedia Style',
+                    'guided_rewrite_improved': 'Guided Rewrite+',
+                    'guided_rewrite_original': 'Guided Rewrite',
+                    'explanation': 'Explanation', 'narrative': 'Narrative'
+                };
+                const resolvePromptLabel = (key) =>
+                    PROMPT_LABELS[key] || PROMPT_LABELS[Object.keys(PROMPT_LABELS).find(k => key.startsWith(k + '-'))] || key;
+                const CAT_MAP = { 'format': 'Format', 'nemotron': 'Nemotron', 'rewire': 'REWIRE' };
+
+                const getFamily = (m) => {
+                    const ml = m.toLowerCase();
+                    if (ml.includes('smollm')) return 'SmolLM2';
+                    if (ml.includes('gemma'))  return 'Gemma';
+                    if (ml.includes('qwen'))   return 'Qwen';
+                    if (ml.includes('falcon')) return 'Falcon';
+                    if (ml.includes('granite')) return 'Granite';
+                    if (ml.includes('llama'))  return 'Llama';
+                    return 'Other';
+                };
+
+                const experiments = rawData.map((d, i) => {
+                    const [cat, promptFile] = d.prompt.split('/');
+                    const promptKey = promptFile.replace('.md', '');
+                    return {
+                        idx: i,
+                        cat: CAT_MAP[cat] || cat,
+                        prompt: resolvePromptLabel(promptKey),
+                        model: d.model.split('/').pop(),
+                        source: SOURCE_MAP[d.source_dataset] || d.source_dataset,
+                        family: getFamily(d.model),
+                        compTokens: d.output_tokens / 1e9,
+                        promptTokens: d.input_tokens / 1e9,
+                        numDocs: d.num_documents / 1e6,
+                        dclmDiff: d.dclm_score_difference,
+                        outDclm: d.output_dclm_score,
+                        inDclm: d.input_dclm_score,
+                        eduDiff: d.edu_score_difference,
+                        outEdu: d.output_edu_score,
+                        inEdu: d.input_edu_score,
+                        compPerDoc: d.output_token_count_mean,
+                        inputPerDoc: d.input_token_count_mean,
+                        tokenReduction: d.token_reduction_mean,
+                        compressionRatio: d.compression_ratio,
+                        phase: Math.random() * Math.PI * 2
+                    };
+                });
+
+                // ═══════════════════════════════════════════════════════════
+                // MODEL FAMILIES
+                // ═══════════════════════════════════════════════════════════
+                const familyColors = {
+                    'Gemma':   '#5b9bd5',
+                    'Qwen':    '#e07b54',
+                    'SmolLM2': '#e06b9e',
+                    'Falcon':  '#c9a046',
+                    'Granite': '#9a8ec2',
+                    'Llama':   '#8bc474',
+                };
+                const familyOrder = ['Gemma','Qwen','SmolLM2','Falcon','Granite','Llama'];
+
+                // ═══════════════════════════════════════════════════════════
+                // FILTER: Only prompts tested across multiple model families
+                // ═══════════════════════════════════════════════════════════
+                const focusPrompts = ['Math', 'Table', 'FAQ', 'Tutorial'];
+                const filtered = experiments.filter(d => focusPrompts.includes(d.prompt));
+
+                // Sort rows by median compPerDoc (most verbose on top)
+                const promptStats = {};
+                focusPrompts.forEach(p => {
+                    const vals = filtered.filter(d => d.prompt === p).map(d => d.compPerDoc).sort((a,b) => a - b);
+                    const mid = Math.floor(vals.length / 2);
+                    promptStats[p] = {
+                        median: vals.length % 2 ? vals[mid] : (vals[mid-1] + vals[mid]) / 2,
+                        count: vals.length
+                    };
+                });
+                const sortedPrompts = [...focusPrompts].sort((a, b) => promptStats[b].median - promptStats[a].median);
+
+                // ═══════════════════════════════════════════════════════════
+                // TOOLTIP
+                // ═══════════════════════════════════════════════════════════
+                const fmtB = (v) => v >= 10 ? v.toFixed(0) + 'B' : v.toFixed(1) + 'B';
+                const fmtSign = (v, p) => (v >= 0 ? '+' : '') + v.toFixed(p || 3);
+                const dCol = (v) => v >= 0 ? '#5BC0A4' : '#E889AB';
+                const buildTip = (d) =>
+                    `<div style="font-weight:800;font-size:13px;">${d.prompt}</div>` +
+                    `<div style="font-size:11px;color:var(--muted-color);margin-top:-2px;margin-bottom:4px;">` +
+                    `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${familyColors[d.family]};margin-right:4px;vertical-align:middle;"></span>` +
+                    `${d.model} \u00b7 ${d.source}</div>` +
+                    `<div style="padding-top:5px;border-top:1px solid var(--border-color);display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:11.5px;">` +
+                    `<span style="color:var(--muted-color);">Input/doc</span><span>${Math.round(d.inputPerDoc)} tokens</span>` +
+                    `<span style="color:var(--muted-color);">Output/doc</span><span>${Math.round(d.compPerDoc)} tokens</span>` +
+                    `<span style="color:var(--muted-color);">Reduction</span><span>${Math.round(d.tokenReduction)} tokens (${(d.compressionRatio * 100).toFixed(0)}% ratio)</span>` +
+                    `<span style="color:var(--muted-color);">Docs</span><span>${d.numDocs.toFixed(1)}M</span>` +
+                    `<span style="color:var(--muted-color);">Total output</span><span>${fmtB(d.compTokens)}</span>` +
+                    `</div>` +
+                    `<div style="margin-top:5px;padding-top:5px;border-top:1px solid var(--border-color);display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:11.5px;">` +
+                    `<span style="color:var(--muted-color);">DCLM</span>` +
+                    `<span>${d.inDclm.toFixed(3)} \u2192 ${d.outDclm.toFixed(3)} <b style="color:${dCol(d.dclmDiff)};">${fmtSign(d.dclmDiff)}</b></span>` +
+                    `<span style="color:var(--muted-color);">Edu</span>` +
+                    `<span>${d.inEdu.toFixed(2)} \u2192 ${d.outEdu.toFixed(2)} <b style="color:${dCol(d.eduDiff)};">${fmtSign(d.eduDiff, 2)}</b></span>` +
+                    `</div>`;
+
+                // ═══════════════════════════════════════════════════════════
+                // SVG
+                // ═══════════════════════════════════════════════════════════
+                const svg = d3.select(container).append('svg')
+                    .attr('width', '100%')
+                    .style('display', 'block')
+                    .style('cursor', 'crosshair');
+
+                let animFrame = null;
+
+                const render = () => {
+                    const width = container.clientWidth || 800;
+                    const height = Math.max(320, Math.round(width / 2.2));
+                    svg.attr('width', width).attr('height', height);
+
+                    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+                    const textColor = isDark ? 'rgba(255,255,255,0.82)' : 'rgba(0,0,0,0.72)';
+                    const mutedText = isDark ? 'rgba(255,255,255,0.40)' : 'rgba(0,0,0,0.35)';
+                    const subtleText = isDark ? 'rgba(255,255,255,0.20)' : 'rgba(0,0,0,0.15)';
+                    const refLine = isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.07)';
+                    const bandEven = isDark ? 'rgba(255,255,255,0.022)' : 'rgba(0,0,0,0.018)';
+                    const glowColor = isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.25)';
+
+                    const fontSize = Math.max(12, Math.min(15, width / 45));
+
+                    // ─── LAYOUT ───
+                    const labelW = Math.max(70, width * 0.08);
+                    const pl = labelW + 10;
+                    const pr = width - 4;
+                    const pt = fontSize * 2.8;
+                    const pb = height - fontSize * 5;
+                    const plotH = pb - pt;
+                    const rowH = plotH / sortedPrompts.length;
+
+                    const rowCenter = {};
+                    sortedPrompts.forEach((p, i) => { rowCenter[p] = pt + (i + 0.5) * rowH; });
+
+                    // ─── X SCALE: linear ───
+                    const allVals = filtered.map(d => d.compPerDoc);
+                    const xMin = Math.min(150, d3.min(allVals) - 50);
+                    const xMax = Math.max(1150, d3.max(allVals) + 50);
+                    const xScale = d3.scaleLinear()
+                        .domain([xMin, xMax])
+                        .range([pl, pr]);
+
+                    const rBase = Math.max(4.5, Math.min(10, width * 0.009));
+
+                    // ─── FORCE SIMULATION ───
+                    filtered.forEach(d => {
+                        d.tx = xScale(Math.max(15, d.compPerDoc));
+                        d.ty = rowCenter[d.prompt];
+                        d.x = d.tx + (Math.random() - 0.5) * 6;
+                        d.y = d.ty + (Math.random() - 0.5) * rowH * 0.3;
+                    });
+
+                    const sim = d3.forceSimulation(filtered)
+                        .force('x', d3.forceX(d => d.tx).strength(0.72))
+                        .force('y', d3.forceY(d => d.ty).strength(0.55))
+                        .force('collide', d3.forceCollide(rBase + 1.5).iterations(5))
+                        .stop();
+                    for (let i = 0; i < 250; i++) sim.tick();
+
+                    filtered.forEach(d => {
+                        d.x = Math.max(pl + rBase, Math.min(pr - rBase, d.x));
+                        const yMin = rowCenter[d.prompt] - rowH * 0.46;
+                        const yMax = rowCenter[d.prompt] + rowH * 0.46;
+                        d.y = Math.max(yMin, Math.min(yMax, d.y));
+                    });
+
+                    // ─── BG STARS ───
+                    const bgCol = (() => {
+                        const i01 = d3.interpolateRgb(d3.rgb(78,165,183), d3.rgb(206,192,250));
+                        const i12 = d3.interpolateRgb(d3.rgb(206,192,250), d3.rgb(232,137,171));
+                        return (v) => { const t = Math.max(0, Math.min(1, v)); return t <= 0.5 ? i01(t / 0.5) : i12((t - 0.5) / 0.5); };
+                    })();
+                    const gBg = svg.selectAll('g.bg').data([0]).join('g').attr('class', 'bg');
+                    if (!gBg.selectAll('circle').size()) {
+                        const stars = d3.range(50).map(() => ({
+                            x: Math.random() * width, y: Math.random() * height,
+                            z: Math.random(), r: 0.3 + Math.random() * 0.6
+                        }));
+                        gBg.selectAll('circle').data(stars).join('circle')
+                            .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
+                            .attr('fill', d => bgCol(d.z)).attr('fill-opacity', d => 0.03 + d.z * 0.04);
+                    }
+
+                    // ─── ROW BANDS & LABELS ───
+                    const gRows = svg.selectAll('g.rows').data([0]).join('g').attr('class', 'rows');
+                    gRows.selectAll('*').remove();
+
+                    sortedPrompts.forEach((p, i) => {
+                        const y = rowCenter[p];
+
+                        if (i % 2 === 0) {
+                            gRows.append('rect')
+                                .attr('x', pl - 6).attr('y', y - rowH / 2)
+                                .attr('width', pr - pl + 12).attr('height', rowH)
+                                .attr('fill', bandEven).attr('rx', 4);
+                        }
+                        if (i > 0) {
+                            gRows.append('line')
+                                .attr('x1', pl - 2).attr('x2', pr + 2)
+                                .attr('y1', y - rowH / 2).attr('y2', y - rowH / 2)
+                                .attr('stroke', refLine).attr('stroke-width', 0.5);
+                        }
+
+                        // Label
+                        gRows.append('text')
+                            .attr('x', pl - 10).attr('y', y)
+                            .attr('text-anchor', 'end')
+                            .attr('dominant-baseline', 'central')
+                            .attr('fill', textColor)
+                            .attr('font-size', (fontSize * 1.05) + 'px')
+                            .attr('font-weight', '700')
+                            .attr('font-family', 'system-ui, -apple-system, sans-serif')
+                            .attr('letter-spacing', '-0.2px')
+                            .text(p);
+                    });
+
+                    // ─── X AXIS TICKS ───
+                    const gRef = svg.selectAll('g.ref').data([0]).join('g').attr('class', 'ref');
+                    gRef.selectAll('*').remove();
+
+                    [200, 500, 800, 1100].forEach(v => {
+                        const x = xScale(v);
+                        if (x > pl + 10 && x < pr - 10) {
+                            gRef.append('line')
+                                .attr('x1', x).attr('x2', x)
+                                .attr('y1', pb).attr('y2', pb + 4)
+                                .attr('stroke', mutedText).attr('stroke-width', 0.7);
+                            gRef.append('text')
+                                .attr('x', x).attr('y', pb + 8)
+                                .attr('text-anchor', 'middle')
+                                .attr('dominant-baseline', 'hanging')
+                                .attr('fill', mutedText)
+                                .attr('font-size', (fontSize * 0.9) + 'px')
+                                .attr('font-family', 'system-ui, -apple-system, sans-serif')
+                                .text(v);
+                            gRef.append('line')
+                                .attr('x1', x).attr('x2', x)
+                                .attr('y1', pt).attr('y2', pb)
+                                .attr('stroke', subtleText).attr('stroke-width', 0.4)
+                                .attr('stroke-dasharray', '2,6');
+                        }
+                    });
+
+                    // Axis label (centered below tick numbers)
+                    const axisLabelY = pb + 8 + fontSize * 1.6;
+                    gRef.append('text')
+                        .attr('x', (pl + pr) / 2).attr('y', axisLabelY)
+                        .attr('text-anchor', 'middle')
+                        .attr('fill', mutedText)
+                        .attr('font-size', (fontSize * 0.9) + 'px')
+                        .attr('font-weight', '600')
+                        .attr('font-family', 'system-ui, -apple-system, sans-serif')
+                        .text('Output tokens / document');
+
+                    // "concise" / "verbose" arrows (aligned below first/last tick)
+                    gRef.append('text')
+                        .attr('x', xScale(200)).attr('y', axisLabelY)
+                        .attr('text-anchor', 'middle')
+                        .attr('fill', subtleText)
+                        .attr('font-size', (fontSize * 0.82) + 'px')
+                        .attr('font-style', 'italic')
+                        .attr('font-family', 'system-ui, -apple-system, sans-serif')
+                        .text('\u2190 concise');
+
+                    gRef.append('text')
+                        .attr('x', xScale(1100)).attr('y', axisLabelY)
+                        .attr('text-anchor', 'middle')
+                        .attr('fill', subtleText)
+                        .attr('font-size', (fontSize * 0.82) + 'px')
+                        .attr('font-style', 'italic')
+                        .attr('font-family', 'system-ui, -apple-system, sans-serif')
+                        .text('verbose \u2192');
+
+
+                    // ─── MODEL FAMILY LEGEND ───
+                    const gLeg = svg.selectAll('g.legend').data([0]).join('g').attr('class', 'legend');
+                    gLeg.selectAll('*').remove();
+                    const legDotR = Math.max(4, fontSize * 0.38);
+                    const legFontSize = fontSize * 0.9;
+                    const legY = fontSize * 1.1;
+                    const legItemSpacing = legDotR * 2 + 6;
+
+                    // Measure text widths to compute equal center-to-center gaps
+                    const tempTexts = familyOrder.map(fam => {
+                        const t = gLeg.append('text').attr('font-size', legFontSize + 'px')
+                            .attr('font-weight', '500')
+                            .attr('font-family', 'system-ui, -apple-system, sans-serif')
+                            .text(fam);
+                        const w = t.node().getComputedTextLength();
+                        t.remove();
+                        return w;
+                    });
+                    const itemWidths = tempTexts.map(tw => legItemSpacing + tw);
+                    const totalLegW = itemWidths.reduce((a, b) => a + b, 0);
+                    const legPadding = Math.max(12, (width - totalLegW) / (familyOrder.length + 1));
+                    const totalWithPad = totalLegW + legPadding * (familyOrder.length - 1);
+                    const legStartX = (width - totalWithPad) / 2;
+
+                    let lx = legStartX;
+                    familyOrder.forEach((fam, i) => {
+                        const ig = gLeg.append('g').style('cursor', 'pointer');
+                        ig.append('circle')
+                            .attr('cx', lx).attr('cy', legY)
+                            .attr('r', legDotR)
+                            .attr('fill', familyColors[fam]).attr('fill-opacity', 0.85);
+                        ig.append('text')
+                            .attr('x', lx + legDotR + 5).attr('y', legY)
+                            .attr('dominant-baseline', 'central')
+                            .attr('fill', isDark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.60)')
+                            .attr('font-size', legFontSize + 'px')
+                            .attr('font-weight', '500')
+                            .attr('font-family', 'system-ui, -apple-system, sans-serif')
+                            .text(fam);
+                        // Hit area for easier hovering
+                        ig.append('rect')
+                            .attr('x', lx - legDotR - 4).attr('y', legY - legFontSize * 0.7)
+                            .attr('width', itemWidths[i] + 8).attr('height', legFontSize * 1.4)
+                            .attr('fill', 'transparent');
+                        ig.on('mouseenter', () => {
+                            gDots.selectAll('circle').transition().duration(80)
+                                .attr('fill-opacity', d => d.family === fam ? 0.55 : 0.06)
+                                .attr('stroke-opacity', d => d.family === fam ? 0.5 : 0.03);
+                        }).on('mouseleave', () => {
+                            gDots.selectAll('circle').transition().duration(160)
+                                .attr('fill-opacity', 0.82).attr('stroke-opacity', 0.12);
+                        });
+                        lx += itemWidths[i] + legPadding;
+                    });
+
+                    // ─── TOOLTIP ───
+                    container.style.position = container.style.position || 'relative';
+                    let tip = container.querySelector('.d3-tooltip');
+                    let tipInner;
+                    if (!tip) {
+                        tip = document.createElement('div');
+                        tip.className = 'd3-tooltip';
+                        Object.assign(tip.style, {
+                            position: 'absolute', top: '0px', left: '0px',
+                            transform: 'translate(-9999px, -9999px)',
+                            pointerEvents: 'none',
+                            padding: '10px 14px', borderRadius: '12px',
+                            fontSize: '12px', lineHeight: '1.4',
+                            border: '1px solid var(--border-color)',
+                            background: 'var(--surface-bg)',
+                            color: 'var(--text-color)',
+                            boxShadow: '0 8px 32px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.12)',
+                            opacity: '0', transition: 'opacity .12s ease',
+                            backdropFilter: 'saturate(1.12) blur(8px)',
+                            zIndex: '20', maxWidth: '320px'
+                        });
+                        tipInner = document.createElement('div');
+                        tipInner.className = 'd3-tooltip__inner';
+                        Object.assign(tipInner.style, {
+                            textAlign: 'left', display: 'flex', flexDirection: 'column',
+                            gap: '4px', minWidth: '220px'
+                        });
+                        tip.appendChild(tipInner);
+                        container.appendChild(tip);
+                    } else {
+                        tipInner = tip.querySelector('.d3-tooltip__inner') || tip;
+                    }
+
+                    // ─── DOTS ───
+                    const gDots = svg.selectAll('g.dots').data([0]).join('g').attr('class', 'dots');
+
+                    const handleEnter = function (ev, d) {
+                        gDots.selectAll('circle').attr('fill-opacity', 0.1).attr('stroke-opacity', 0.08);
+                        gDots.selectAll('circle')
+                            .filter(c => c.family === d.family)
+                            .attr('fill-opacity', 0.55).attr('stroke-opacity', 0.5);
+                        d3.select(this)
+                            .raise()
+                            .attr('fill-opacity', 1)
+                            .attr('stroke-opacity', 1)
+                            .style('filter', `drop-shadow(0 0 8px ${glowColor})`)
+                            .transition().duration(90).ease(d3.easeCubicOut)
+                            .attr('r', rBase * 1.5);
+                        tipInner.innerHTML = buildTip(d);
+                        tip.style.opacity = '1';
+                    };
+                    const handleMove = (ev) => {
+                        const [mx, my] = d3.pointer(ev, container);
+                        const bw = tip.offsetWidth || 260;
+                        const bh = tip.offsetHeight || 180;
+                        const ox = (mx + bw + 20 > width) ? -(bw + 12) : 12;
+                        const oy = (my + bh + 20 > height) ? -(bh + 12) : 14;
+                        tip.style.transform = `translate(${Math.round(mx + ox)}px, ${Math.round(my + oy)}px)`;
+                    };
+                    const handleLeave = function () {
+                        gDots.selectAll('circle')
+                            .attr('fill-opacity', 0.82)
+                            .attr('stroke-opacity', 0.12);
+                        d3.select(this)
+                            .style('filter', null)
+                            .transition().duration(90).ease(d3.easeCubicOut)
+                            .attr('r', rBase);
+                        tip.style.opacity = '0';
+                        tip.style.transform = 'translate(-9999px, -9999px)';
+                    };
+
+                    gDots.selectAll('circle').data(filtered, d => d.idx)
+                        .join(
+                            enter => enter.append('circle')
+                                .attr('cx', d => d.x).attr('cy', d => d.y)
+                                .attr('r', rBase)
+                                .attr('fill', d => familyColors[d.family] || '#aaa')
+                                .attr('fill-opacity', 0.82)
+                                .attr('stroke', d => familyColors[d.family] || '#aaa')
+                                .attr('stroke-width', 0.7)
+                                .attr('stroke-opacity', 0.12)
+                                .on('mouseenter', handleEnter)
+                                .on('mousemove', handleMove)
+                                .on('mouseleave', handleLeave),
+                            update => update
+                                .attr('cx', d => d.x).attr('cy', d => d.y)
+                                .attr('r', rBase)
+                                .attr('fill', d => familyColors[d.family] || '#aaa')
+                                .attr('fill-opacity', 0.82)
+                                .attr('stroke', d => familyColors[d.family] || '#aaa')
+                                .attr('stroke-width', 0.7)
+                                .attr('stroke-opacity', 0.12)
+                                .on('mouseenter', handleEnter)
+                                .on('mousemove', handleMove)
+                                .on('mouseleave', handleLeave)
+                        );
+
+                    // ─── BREATHING ───
+                    if (animFrame) cancelAnimationFrame(animFrame);
+                    const breathe = () => {
+                        const now = Date.now() * 0.001;
+                        gDots.selectAll('circle').each(function (d) {
+                            d3.select(this).attr('r', rBase + Math.sin(now * 0.5 + d.phase) * rBase * 0.03);
+                        });
+                        animFrame = requestAnimationFrame(breathe);
+                    };
+                    breathe();
+                };
+
+                if (window.ResizeObserver) {
+                    new ResizeObserver(() => render()).observe(container);
+                } else {
+                    window.addEventListener('resize', render);
+                }
+                render();
+            }
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+        } else { ensureD3(bootstrap); }
+    })();
+</script>

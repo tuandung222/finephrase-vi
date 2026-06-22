@@ -1,0 +1,443 @@
+<div class="finephrase-explorer"></div>
+<style>
+  .finephrase-explorer {
+    font-family: var(--font-body, system-ui, sans-serif);
+    color: var(--text-color, #1a1a1a);
+    position: relative;
+  }
+  .finephrase-explorer .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .finephrase-explorer .nav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 8px;
+    background: var(--surface-bg, #fff);
+    color: var(--text-color, #1a1a1a);
+    font-size: 16px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .finephrase-explorer .nav-btn:hover {
+    background: var(--primary-color, #6366f1);
+    color: #fff;
+    border-color: var(--primary-color, #6366f1);
+  }
+  .finephrase-explorer .random-btn {
+    padding: 6px 14px;
+    width: auto;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .finephrase-explorer .sample-counter {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--muted-color, #888);
+    white-space: nowrap;
+  }
+  .finephrase-explorer .source-meta {
+    padding: 12px 14px;
+    font-size: 12px;
+    color: var(--muted-color, #888);
+    line-height: 1.8;
+    border-top: 1px solid var(--border-color, #ddd);
+    word-break: break-all;
+    flex-shrink: 0;
+    margin-top: auto;
+  }
+  .finephrase-explorer .source-meta a {
+    color: var(--primary-color, #6366f1);
+    text-decoration: none;
+  }
+  .finephrase-explorer .source-meta a:hover {
+    text-decoration: underline;
+  }
+  .finephrase-explorer .source-meta .meta-label {
+    font-weight: 600;
+    color: var(--text-color, #1a1a1a);
+    font-size: 11px;
+  }
+  .finephrase-explorer .source-meta .meta-value {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+  }
+  .finephrase-explorer .panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 14px;
+  }
+  .finephrase-explorer .source-panel {
+    grid-row: 1 / 3;
+    grid-column: 1;
+  }
+  .finephrase-explorer .panel {
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 10px;
+    background: var(--surface-bg, #fff);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .finephrase-explorer .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    border-bottom: 1px solid var(--border-color, #ddd);
+    background: var(--surface-bg, #fff);
+    flex-shrink: 0;
+  }
+  .finephrase-explorer .panel-header .header-stats {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--muted-color, #888);
+    text-transform: none;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  .finephrase-explorer .prompt-tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .finephrase-explorer .panel-body {
+    padding: 14px;
+    overflow-y: auto;
+    max-height: 320px;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .finephrase-explorer .source-panel {
+    max-height: 760px;
+  }
+  .finephrase-explorer .source-panel .panel-body {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
+  .finephrase-explorer .panel-body table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+    margin: 8px 0;
+  }
+  .finephrase-explorer .panel-body th,
+  .finephrase-explorer .panel-body td {
+    border: 1px solid var(--border-color, #ddd);
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .finephrase-explorer .panel-body th {
+    background: var(--surface-bg, #f5f5f5);
+    font-weight: 600;
+  }
+  .finephrase-explorer .panel-body h2,
+  .finephrase-explorer .panel-body h3 {
+    margin: 12px 0 6px;
+    font-size: 14px;
+    font-weight: 700;
+    white-space: normal;
+  }
+  .finephrase-explorer .panel-body h2:first-child,
+  .finephrase-explorer .panel-body h3:first-child {
+    margin-top: 0;
+  }
+  .finephrase-explorer .panel-body strong {
+    font-weight: 700;
+  }
+  .finephrase-explorer .error-msg {
+    color: #dc2626;
+    padding: 20px;
+    font-size: 14px;
+  }
+  @media (max-width: 768px) {
+    .finephrase-explorer .panels {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto;
+    }
+    .finephrase-explorer .source-panel {
+      grid-row: auto;
+    }
+    .finephrase-explorer .panel-body {
+      max-height: 250px;
+    }
+  }
+</style>
+<script>
+  (() => {
+    const PROMPTS = ['faq', 'math', 'table', 'tutorial'];
+    const PROMPT_LABELS = { faq: 'FAQ', math: 'Math', table: 'Table', tutorial: 'Tutorial' };
+
+    // Indices into the full 12-prompt alphabetical order used by experiment charts
+    const PROMPT_COLOR_INDICES = { faq: 6, math: 8, table: 9, tutorial: 10 };
+
+    const getPromptColors = () => {
+      const palette = window.ColorPalettes
+        ? window.ColorPalettes.getColors('categorical', 12)
+        : ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac','#d37295','#a0cbe8'];
+      const colors = {};
+      for (const p of PROMPTS) colors[p] = palette[PROMPT_COLOR_INDICES[p]];
+      return colors;
+    };
+
+    const hexToRgb = (hex) => {
+      const h = hex.replace('#', '');
+      return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+    };
+    const luminance = ({ r, g, b }) => 0.299 * r + 0.587 * g + 0.114 * b;
+
+    const bootstrap = () => {
+      const scriptEl = document.currentScript;
+      let container = scriptEl ? scriptEl.previousElementSibling : null;
+      if (!(container && container.classList && container.classList.contains('finephrase-explorer'))) {
+        const cs = Array.from(document.querySelectorAll('.finephrase-explorer'))
+          .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+        container = cs[cs.length - 1] || null;
+      }
+      if (!container) return;
+      if (container.dataset) {
+        if (container.dataset.mounted === 'true') return;
+        container.dataset.mounted = 'true';
+      }
+
+      const parseJsonl = (text) => text.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+
+      const fetchFirstAvailable = async (paths) => {
+        for (const p of paths) {
+          try {
+            const r = await fetch(p, { cache: 'no-cache' });
+            if (r.ok) {
+              const text = await r.text();
+              return p.endsWith('.jsonl') ? parseJsonl(text) : JSON.parse(text);
+            }
+          } catch (_) {}
+        }
+        throw new Error('Data file not found');
+      };
+
+      const renderMarkdown = (text) => {
+        if (!text) return '';
+        let html = text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+
+        const lines = html.split('\n');
+        let inTable = false;
+        const out = [];
+        let tableRows = [];
+
+        const flushTable = () => {
+          if (tableRows.length < 2) {
+            out.push(...tableRows.map(r => r.raw));
+            tableRows = [];
+            return;
+          }
+          let t = '<table>';
+          tableRows.forEach((row, i) => {
+            if (row.isSep) return;
+            const tag = i === 0 ? 'th' : 'td';
+            t += '<tr>' + row.cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+          });
+          t += '</table>';
+          out.push(t);
+          tableRows = [];
+        };
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+            const cells = trimmed.slice(1, -1).split('|');
+            const isSep = cells.every(c => /^[\s\-:]+$/.test(c));
+            tableRows.push({ cells, isSep, raw: line });
+            inTable = true;
+          } else {
+            if (inTable) { flushTable(); inTable = false; }
+            out.push(line);
+          }
+        }
+        if (inTable) flushTable();
+
+        html = out.join('\n');
+        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\n(?!<)/g, '<br>');
+        return html;
+      };
+
+      const wc = (text) => text ? text.split(/\s+/).filter(Boolean).length : 0;
+      const fmtNum = (n) => n.toLocaleString('en-US');
+      const statsText = (text) => `${fmtNum(wc(text))} words · ${fmtNum(text.length)} chars`;
+
+      const makeTag = (label, color) => {
+        const textColor = luminance(hexToRgb(color)) > 160 ? '#111' : '#fff';
+        const tag = document.createElement('span');
+        tag.className = 'prompt-tag';
+        tag.style.cssText = `background:${color};color:${textColor};`;
+        tag.textContent = label;
+        return tag;
+      };
+
+      const render = (data, idx, promptColors) => {
+        const total = data.length;
+        const entry = data[idx];
+        container.innerHTML = '';
+
+        // Controls row: nav buttons + sample counter
+        const controls = document.createElement('div');
+        controls.className = 'controls';
+
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'nav-btn';
+        prevBtn.textContent = '←';
+        prevBtn.title = 'Previous sample';
+        prevBtn.addEventListener('click', () => { currentIdx = (currentIdx - 1 + total) % total; render(data, currentIdx, promptColors); });
+
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'nav-btn';
+        nextBtn.textContent = '→';
+        nextBtn.title = 'Next sample';
+        nextBtn.addEventListener('click', () => { currentIdx = (currentIdx + 1) % total; render(data, currentIdx, promptColors); });
+
+        const randBtn = document.createElement('button');
+        randBtn.className = 'nav-btn random-btn';
+        randBtn.textContent = 'Random';
+        randBtn.title = 'Random sample';
+        randBtn.addEventListener('click', () => { currentIdx = Math.floor(Math.random() * total); render(data, currentIdx, promptColors); });
+
+        const counter = document.createElement('span');
+        counter.className = 'sample-counter';
+        counter.textContent = `${idx + 1} / ${total}`;
+
+        controls.appendChild(prevBtn);
+        controls.appendChild(nextBtn);
+        controls.appendChild(randBtn);
+        controls.appendChild(counter);
+        container.appendChild(controls);
+
+        const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+        // Panels grid
+        const panels = document.createElement('div');
+        panels.className = 'panels';
+
+        // Source panel
+        const sourceText = entry.source || '';
+        const sourcePanel = document.createElement('div');
+        sourcePanel.className = 'panel source-panel';
+        const sourceHeader = document.createElement('div');
+        sourceHeader.className = 'panel-header';
+        const sourceTag = makeTag('FineWeb-Edu', 'var(--primary-color, #6366f1)');
+        sourceTag.style.cssText = 'background:var(--primary-color, #6366f1);color:var(--on-primary, #fff);';
+        const sourceStats = document.createElement('span');
+        sourceStats.className = 'header-stats';
+        sourceStats.textContent = statsText(sourceText);
+        sourceHeader.appendChild(sourceTag);
+        sourceHeader.appendChild(sourceStats);
+        const sourceBody = document.createElement('div');
+        sourceBody.className = 'panel-body';
+        sourceBody.innerHTML = renderMarkdown(sourceText);
+        sourcePanel.appendChild(sourceHeader);
+        sourcePanel.appendChild(sourceBody);
+
+        // Metadata section inside source panel
+        const sourceMeta = document.createElement('div');
+        sourceMeta.className = 'source-meta';
+        const metaLines = [];
+        if (entry.id) metaLines.push(`<span class="meta-label">ID:</span> <span class="meta-value">${esc(entry.id)}</span>`);
+        if (entry.url) metaLines.push(`<span class="meta-label">Original Website:</span> <a href="${entry.url}" target="_blank" rel="noopener">${esc(entry.url)}</a>`);
+        if (entry.file_path) metaLines.push(`<span class="meta-label">CommonCrawl S3:</span> <span class="meta-value">${esc(entry.file_path)}</span>`);
+        sourceMeta.innerHTML = metaLines.join('<br>');
+        sourcePanel.appendChild(sourceMeta);
+        panels.appendChild(sourcePanel);
+
+        // 4 prompt panels
+        for (const prompt of PROMPTS) {
+          const color = promptColors[prompt];
+          const genText = entry[prompt] || '';
+          const panel = document.createElement('div');
+          panel.className = 'panel';
+
+          const header = document.createElement('div');
+          header.className = 'panel-header';
+          header.appendChild(makeTag(PROMPT_LABELS[prompt], color));
+          const stats = document.createElement('span');
+          stats.className = 'header-stats';
+          stats.textContent = statsText(genText);
+          header.appendChild(stats);
+
+          const body = document.createElement('div');
+          body.className = 'panel-body';
+          body.innerHTML = renderMarkdown(genText);
+
+          panel.appendChild(header);
+          panel.appendChild(body);
+          panels.appendChild(panel);
+        }
+
+        container.appendChild(panels);
+      };
+
+      let currentIdx = 0;
+      const promptColors = getPromptColors();
+
+      document.addEventListener('palettes:updated', () => {
+        Object.assign(promptColors, getPromptColors());
+        if (loadedData) render(loadedData, currentIdx, promptColors);
+      });
+
+      let loadedData = null;
+
+      fetchFirstAvailable([
+        '/data/finephrase-samples.jsonl',
+        '/data/finephrase-samples.json',
+        './assets/data/finephrase-samples.jsonl',
+        './assets/data/finephrase-samples.json',
+        '../assets/data/finephrase-samples.jsonl',
+        '../../assets/data/finephrase-samples.jsonl',
+      ]).then(data => {
+        loadedData = data;
+        currentIdx = Math.floor(Math.random() * data.length);
+        render(data, currentIdx, promptColors);
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowLeft') {
+            currentIdx = (currentIdx - 1 + data.length) % data.length;
+            render(data, currentIdx, promptColors);
+          } else if (e.key === 'ArrowRight') {
+            currentIdx = (currentIdx + 1) % data.length;
+            render(data, currentIdx, promptColors);
+          }
+        });
+      }).catch(err => {
+        container.innerHTML = `<pre class="error-msg">Failed to load sample data: ${err.message}</pre>`;
+      });
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
+    } else {
+      bootstrap();
+    }
+  })();
+</script>

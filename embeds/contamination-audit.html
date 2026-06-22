@@ -1,0 +1,447 @@
+<div class="d3-contam" style="width:100%;margin:6px 0;"></div>
+<style>
+  .d3-contam { position: relative; }
+  .d3-contam svg { display: block; }
+  .d3-contam .axes path,
+  .d3-contam .axes line { stroke: var(--axis-color); }
+  .d3-contam .axes text { fill: var(--tick-color); }
+  .d3-contam .grid line { stroke: var(--grid-color); }
+  .d3-contam .row-label { fill: var(--text-color); font-family: system-ui, -apple-system, sans-serif; }
+  .d3-contam .row-marker { fill: var(--muted-color); }
+  .d3-contam .ref-line { stroke: var(--muted-color); stroke-dasharray: 3,4; stroke-width: 1; }
+  .d3-contam .ref-text { fill: var(--muted-color); font-family: system-ui, -apple-system, sans-serif; }
+  .d3-contam .seg { stroke: var(--surface-bg); stroke-width: 0.5; }
+  .d3-contam .hit { fill: transparent; cursor: default; }
+  /* only the transparent hit rects should capture hover, so it tracks the bar and the label */
+  .d3-contam .seg,
+  .d3-contam .row-label,
+  .d3-contam .row-marker,
+  .d3-contam .ref-line,
+  .d3-contam .ref-text,
+  .d3-contam .grid line { pointer-events: none; }
+
+  .d3-contam .controls {
+    display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap;
+    justify-content: flex-end; margin: 14px 0 0 0;
+  }
+  .d3-contam .control-group { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .d3-contam .control-group > label,
+  .d3-contam .control-group > .label { font-size: 12px; font-weight: 700; color: var(--text-color); }
+  .d3-contam .pills { display: flex; gap: 6px; }
+  .d3-contam .pill {
+    font-size: 12px; padding: 7px 13px; border-radius: 999px;
+    border: 1px solid var(--border-color); background: var(--surface-bg);
+    color: var(--muted-color); cursor: pointer; user-select: none;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .d3-contam .pill:hover { border-color: var(--text-color); }
+  .d3-contam .pill.active {
+    color: var(--surface-bg); background: var(--text-color); border-color: var(--text-color); font-weight: 600;
+  }
+  .d3-contam select {
+    font-size: 12px; padding: 8px 28px 8px 10px; border: 1px solid var(--border-color);
+    border-radius: 8px; background: var(--surface-bg); color: var(--text-color); cursor: pointer;
+  }
+
+  .d3-contam .legend { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 16px; }
+  .d3-contam .legend-title { font-size: 12px; font-weight: 700; color: var(--text-color); }
+  .d3-contam .legend .items { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+  .d3-contam .legend .item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; color: var(--text-color); }
+  .d3-contam .legend .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border-color); }
+  .d3-contam .legend .note { font-size: 11.5px; color: var(--muted-color); margin-top: 2px; }
+
+  .d3-contam .d3-tooltip {
+    position: absolute; top: 0; left: 0; transform: translate(-9999px, -9999px);
+    pointer-events: none; padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.4;
+    border: 1px solid var(--border-color); background: var(--surface-bg); color: var(--text-color);
+    box-shadow: 0 8px 32px rgba(0,0,0,.22); opacity: 0; transition: opacity .12s ease; z-index: 20; max-width: 320px;
+  }
+</style>
+<script>
+(() => {
+  const ensureD3 = (cb) => {
+    if (window.d3 && typeof window.d3.select === 'function') return cb();
+    let s = document.getElementById('d3-cdn-script');
+    if (!s) {
+      s = document.createElement('script');
+      s.id = 'd3-cdn-script';
+      s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js';
+      document.head.appendChild(s);
+    }
+    const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+    s.addEventListener('load', onReady, { once: true });
+    if (window.d3) onReady();
+  };
+
+  const bootstrap = () => {
+    const scriptEl = document.currentScript;
+    let container = scriptEl ? scriptEl.previousElementSibling : null;
+    if (!(container && container.classList && container.classList.contains('d3-contam'))) {
+      const cs = Array.from(document.querySelectorAll('.d3-contam')).filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+      container = cs[cs.length - 1] || null;
+    }
+    if (!container) return;
+    if (container.dataset.mounted === 'true') return;
+    container.dataset.mounted = 'true';
+
+    // ─── data path (HtmlEmbed `data` prop → data-datafiles) ───
+    let mountEl = container;
+    while (mountEl && !mountEl.getAttribute?.('data-datafiles')) mountEl = mountEl.parentElement;
+    const dataAttr = mountEl?.getAttribute?.('data-datafiles');
+    const dataPaths = dataAttr
+      ? [dataAttr.includes('/') ? dataAttr : `/data/${dataAttr}`]
+      : ['/data/contamination_audit_report.json', './assets/data/contamination_audit_report.json', '../assets/data/contamination_audit_report.json'];
+
+    const fetchFirst = async (paths) => {
+      for (const p of paths) {
+        try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return r.json(); } catch (_) {}
+      }
+      throw new Error('Data not found');
+    };
+
+    fetchFirst(dataPaths).then(buildChart).catch(err => {
+      container.innerHTML = `<pre style="color:red;padding:12px;">Error loading data: ${err.message}</pre>`;
+    });
+
+    function buildChart(report) {
+      const datasets = report.datasets;
+
+      // ─── taxonomy ───
+      const PROMPTS = ['article', 'discussion', 'explanation', 'faq', 'math', 'narrative', 'table', 'tutorial'];
+      const MODELS = ['smollm2', 'qwen3', 'llama32', 'gemma_1b', 'falcon3', 'granite3'];
+      const BASELINES = ['cosmopedia', 'dclm', 'fw_edu_hq', 'fw_edu_lq', 'nemotron_hq_synth', 'rewire', 'synth_query_reasoning_answer', 'ultra_fineweb'];
+
+      // each corpus is subsampled to roughly this many tokens, so tokens/doc ≈ BUDGET / docs
+      const TOKEN_BUDGET = 5e9;
+
+      const PROMPT_LABEL = {
+        article: 'Article', discussion: 'Discussion', explanation: 'Explanation', faq: 'FAQ',
+        math: 'Math', narrative: 'Narrative', table: 'Table', tutorial: 'Tutorial'
+      };
+      const MODEL_LABEL = {
+        smollm2: 'SmolLM2', qwen3: 'Qwen3', llama32: 'Llama 3.2',
+        gemma_1b: 'Gemma 3', falcon3: 'Falcon 3', granite3: 'Granite 3'
+      };
+      const BASELINE_LABEL = {
+        cosmopedia: 'Cosmopedia', dclm: 'DCLM', fw_edu_hq: 'FineWeb-Edu HQ', fw_edu_lq: 'FineWeb-Edu LQ',
+        nemotron_hq_synth: 'Nemotron-HQ-Synth', rewire: 'REWIRE', synth_query_reasoning_answer: 'SYNTH', ultra_fineweb: 'Ultra-FineWeb'
+      };
+
+      // benchmark buckets: 6 biggest by total hits get their own colour, the rest fold into "Other"
+      const BENCH_ORDER = ['mmlu_redux_cf', 'hellaswag_cf', 'wikitablequestions', 'squad_v2', 'piqa_cf', 'arc_cf'];
+      const OTHER = '__other';
+      const BENCH_LABEL = {
+        mmlu_redux_cf: 'MMLU-Redux', hellaswag_cf: 'HellaSwag', wikitablequestions: 'WikiTableQuestions',
+        squad_v2: 'SQuAD v2', piqa_cf: 'PIQA', arc_cf: 'ARC', [OTHER]: 'Other'
+      };
+      const SEGMENTS = [...BENCH_ORDER, OTHER];
+      const bucketOf = (g) => BENCH_ORDER.includes(g) ? g : OTHER;
+
+      // colours: categorical for the 6 named benchmarks, muted grey for "Other"
+      const fallback = ['#5b9bd5', '#e07b54', '#5BC0A4', '#9a8ec2', '#e06b9e', '#c9a046'];
+      const catColors = (window.ColorPalettes?.getColors?.('categorical', 6)) || fallback;
+      const COLOR = {};
+      BENCH_ORDER.forEach((b, i) => { COLOR[b] = catColors[i] || fallback[i]; });
+      COLOR[OTHER] = '#9aa0a6';
+
+      // ─── row construction ───
+      const foldBuckets = (byGroup) => {
+        const out = {}; SEGMENTS.forEach(s => out[s] = 0);
+        for (const [g, c] of Object.entries(byGroup)) out[bucketOf(g)] += c;
+        return out;
+      };
+      const ORIGINAL = ['dclm', 'fw_edu_hq', 'fw_edu_lq', 'ultra_fineweb'];   // curated web
+      const SYNTH_BASE = ['cosmopedia', 'nemotron_hq_synth', 'rewire', 'synth_query_reasoning_answer'];  // generated
+      // hollow diamond = original/curated-web baseline, filled diamond = synthetic baseline, none = rephrased
+      const markerFor = (name) => ORIGINAL.includes(name) ? '\u25C7' : (SYNTH_BASE.includes(name) ? '\u25C6' : '');
+
+      const datasetRow = (name, label, kind) => {
+        const d = datasets[name];
+        const sub = kind === 'baseline' ? 'External / source dataset' : 'FinePhrase rephrased';
+        return { key: name, label, kind, marker: markerFor(name), sub, totalDocs: d.total_docs, contam: d.contaminated_docs, rate: d.contamination_rate, buckets: foldBuckets(d.by_group), nSets: 1, avgLen: TOKEN_BUDGET / d.total_docs };
+      };
+      // generic pooled aggregate over a set of corpora (used by the prompt/model/type lenses)
+      const pooledRow = (key, label, kind, marker, sub, names) => {
+        let totalDocs = 0, contam = 0; const buckets = {}; SEGMENTS.forEach(s => buckets[s] = 0);
+        for (const n of names) {
+          const d = datasets[n]; totalDocs += d.total_docs; contam += d.contaminated_docs;
+          const fb = foldBuckets(d.by_group); SEGMENTS.forEach(s => buckets[s] += fb[s]);
+        }
+        return { key, label, kind, marker, sub, totalDocs, contam, rate: contam / totalDocs, buckets, nSets: names.length, avgLen: (TOKEN_BUDGET * names.length) / totalDocs };
+      };
+      const promptNames = (p) => MODELS.map(m => `${p}_${m}`).filter(n => datasets[n]);
+      const modelNames = (m) => PROMPTS.map(p => `${p}_${m}`).filter(n => datasets[n]);
+      const rephrasedNames = PROMPTS.flatMap(p => MODELS.map(m => `${p}_${m}`)).filter(n => datasets[n]);
+      const baselineRows = () => BASELINES.map(n => datasetRow(n, BASELINE_LABEL[n], 'baseline'));
+
+      // ─── one row-set per grouping lens ───
+      const ROWSETS = {
+        type: [
+          pooledRow('type:original', 'Original web', 'baseline', '\u25C7', 'Curated web baselines, pooled', ORIGINAL),
+          pooledRow('type:synthbase', 'Synthetic baselines', 'baseline', '\u25C6', 'Synthetic baselines, pooled', SYNTH_BASE),
+          pooledRow('type:reph', 'FinePhrase rephrased', 'rephrased', '', 'All 48 rephrased corpora, pooled', rephrasedNames)
+        ],
+        prompt: [
+          ...baselineRows(),
+          ...PROMPTS.map(p => pooledRow(`prompt:${p}`, PROMPT_LABEL[p], 'rephrased', '', 'FinePhrase prompt · pooled over the 6 rephrasers', promptNames(p)))
+        ],
+        model: [
+          ...baselineRows(),
+          ...MODELS.map(m => pooledRow(`model:${m}`, MODEL_LABEL[m], 'rephrased', '', 'FinePhrase rephraser · pooled over the 8 prompts', modelNames(m)))
+        ],
+        dataset: Object.keys(datasets).map(name => {
+          if (BASELINES.includes(name)) return datasetRow(name, BASELINE_LABEL[name], 'baseline');
+          const model = MODELS.find(m => name.endsWith(`_${m}`));
+          const prompt = model ? name.slice(0, name.length - model.length - 1) : name;
+          return datasetRow(name, `${PROMPT_LABEL[prompt] || prompt} · ${MODEL_LABEL[model] || model}`, 'rephrased');
+        })
+      };
+
+      // flagged documents per billion tokens; the corpora are token-matched, so this is
+      // the length-fair quantity (the per-document rate scales with mean document length)
+      const perBtokOf = (contam, nSets) => contam / (nSets * TOKEN_BUDGET) * 1e9;
+
+      // pooled reference means for both metrics
+      const meanStats = (names) => {
+        let t = 0, c = 0; for (const n of names) { t += datasets[n].total_docs; c += datasets[n].contaminated_docs; }
+        return { rate: c / t, perbtok: perBtokOf(c, names.length) };
+      };
+      const refs = [
+        { label: 'rephrased avg', ...meanStats(rephrasedNames) },
+        { label: 'baseline avg', ...meanStats(BASELINES) }
+      ];
+
+      // ─── state ───
+      let groupBy = 'type';        // 'type' | 'prompt' | 'model' | 'dataset'
+      let metric = 'perbtok';      // 'perbtok' | 'rate'
+
+      // ─── tooltip ───
+      container.style.position = 'relative';
+      const tip = document.createElement('div'); tip.className = 'd3-tooltip';
+      const tipInner = document.createElement('div'); tip.appendChild(tipInner); container.appendChild(tip);
+
+      const fmtInt = d3.format(',');
+      const fmtPct = (r) => (r * 100).toFixed(r < 0.001 ? 4 : 3) + '%';
+      const fmtPctShort = (r) => (r * 100).toFixed(3) + '%';
+      const fmtLen = (v) => fmtInt(Math.round(v / 10) * 10);
+      const fmtPerB = (v) => fmtInt(Math.round(v));
+
+      const buildTip = (row) => {
+        const kindText = row.sub;
+        const bsum = SEGMENTS.reduce((a, s) => a + row.buckets[s], 0);
+        const top = SEGMENTS.map(s => [s, row.buckets[s]]).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]).slice(0, 4);
+        const rows = top.map(([s, c]) =>
+          `<span style="color:var(--muted-color);">${BENCH_LABEL[s]}</span><span>${fmtInt(c)} <span style="color:var(--muted-color);">(${fmtPct(c / row.totalDocs)})</span></span>`
+        ).join('');
+        const multiNote = bsum > row.contam * 1.02
+          ? `<div style="font-size:10.5px;color:var(--muted-color);margin-top:5px;">Some documents match several benchmarks, so these add up past the flagged total.</div>`
+          : '';
+        return `<div style="font-weight:800;font-size:13px;">${row.label}</div>` +
+          `<div style="font-size:11px;color:var(--muted-color);margin:-1px 0 5px;">${kindText}</div>` +
+          `<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11.5px;padding-bottom:5px;border-bottom:1px solid var(--border-color);">` +
+          `<span style="color:var(--muted-color);">Flagged / Btok</span><span><b>${fmtPerB(perBtokOf(row.contam, row.nSets))}</b></span>` +
+          `<span style="color:var(--muted-color);">Contam. rate</span><span>${fmtPct(row.rate)}</span>` +
+          `<span style="color:var(--muted-color);">Flagged docs</span><span>${fmtInt(row.contam)} of ${fmtInt(row.totalDocs)}</span>` +
+          `<span style="color:var(--muted-color);">Avg length</span><span>\u2248 ${fmtLen(row.avgLen)} tokens/doc</span>` +
+          `</div>` +
+          `<div style="margin-top:5px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11.5px;">${rows}</div>` +
+          multiNote;
+      };
+
+      // ─── svg ───
+      const svg = d3.select(container).append('svg').attr('width', '100%');
+      const gGrid = svg.append('g').attr('class', 'grid');
+      const gBars = svg.append('g');
+      const gAxis = svg.append('g').attr('class', 'axes');
+      const gRefs = svg.append('g');
+      const gLabels = svg.append('g');
+
+      const render = () => {
+        const metricVal = (r) => metric === 'rate' ? r.rate : perBtokOf(r.contam, r.nSets);
+        const rows = ROWSETS[groupBy].slice().sort((a, b) => metricVal(b) - metricVal(a));
+
+        const width = container.clientWidth || 820;
+        const fontSize = Math.max(11.5, Math.min(14, width / 60));
+        const n = rows.length;
+        const rowH = n <= 4 ? 46 : (n <= 20 ? Math.max(26, Math.min(34, width / 28)) : 19);
+        const barH = rowH * 0.66;
+        const labelW = Math.max(120, Math.min(230, width * 0.26));
+        const showRefs = groupBy !== 'type';  // in the Type lens the bars already are the aggregates
+        const margin = { top: showRefs ? 28 : 12, right: 16, bottom: 46, left: labelW };
+        const innerW = Math.max(40, width - margin.left - margin.right);
+        const innerH = rows.length * rowH;
+        const axisGap = 12; // breathing room so the x-axis clears the lowest bar
+        const height = margin.top + innerH + axisGap + margin.bottom;
+        svg.attr('width', width).attr('height', height);
+
+        // A document can match several benchmarks, so the per-group counts sum to a bit
+        // more than the flagged-document total. Rescale segments to that true total so the
+        // bar length equals the row's metric value (keeping the axis and reference lines honest).
+        const valueOf = (row, seg) => {
+          const bs = SEGMENTS.reduce((a, s) => a + row.buckets[s], 0);
+          return bs > 0 ? metricVal(row) * (row.buckets[seg] / bs) : 0;
+        };
+        const xMax = d3.max(rows, metricVal) || 1;
+        const x = d3.scaleLinear().domain([0, xMax]).nice().range([0, innerW]);
+        const y = d3.scaleBand().domain(rows.map(r => r.key)).range([0, innerH]).paddingInner(1 - barH / rowH);
+
+        const tx = (v) => margin.left + x(v);
+        const ty = (k) => margin.top + y(k);
+
+        // grid + axis
+        const ticks = x.ticks(width < 520 ? 4 : 6);
+        const axisFmt = metric === 'rate' ? (v => (v * 100).toFixed(v < 0.001 ? 3 : 2) + '%') : d3.format(',d');
+        gGrid.attr('transform', `translate(${margin.left},${margin.top})`)
+          .selectAll('line').data(ticks).join('line')
+          .attr('x1', d => x(d)).attr('x2', d => x(d)).attr('y1', 0).attr('y2', innerH + axisGap);
+        gAxis.attr('transform', `translate(${margin.left},${margin.top + innerH + axisGap})`)
+          .call(d3.axisBottom(x).tickValues(ticks).tickFormat(axisFmt).tickSizeOuter(0))
+          .call(g => g.selectAll('text').attr('font-size', (fontSize * 0.92) + 'px'));
+
+        // axis title
+        gAxis.selectAll('text.axis-title').data([0]).join('text')
+          .attr('class', 'axis-title').attr('fill', 'var(--tick-color)')
+          .attr('x', innerW / 2).attr('y', 38).attr('text-anchor', 'middle')
+          .attr('font-size', (fontSize * 0.95) + 'px').attr('font-weight', 600)
+          .attr('font-family', 'system-ui, -apple-system, sans-serif')
+          .text(metric === 'rate' ? 'Flagged documents / sampled documents (%)' : 'Flagged documents per billion tokens');
+
+        // bars (stacked per row); hover targets are tied to the bar and the label only,
+        // not the empty space between rows
+        const onEnter = function (ev, r) { tipInner.innerHTML = buildTip(r); tip.style.opacity = '1'; };
+        const onMove = function (ev) {
+          const [mx, my] = d3.pointer(ev, container);
+          const cw = container.clientWidth, ch = container.clientHeight;
+          const bw = tip.offsetWidth || 260, bh = tip.offsetHeight || 140;
+          // prefer below-right of the cursor, flip if it would overflow, then clamp fully
+          // inside the container (its height includes the controls/legend, so short charts
+          // like the Type lens still have room and the tooltip never clips off the top)
+          let x = mx + 14; if (x + bw > cw) x = mx - bw - 14;
+          let y = my + 14; if (y + bh > ch) y = my - bh - 14;
+          x = Math.max(4, Math.min(x, cw - bw - 4));
+          y = Math.max(4, Math.min(y, ch - bh - 4));
+          tip.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+        };
+        const onLeave = function () { tip.style.opacity = '0'; tip.style.transform = 'translate(-9999px,-9999px)'; };
+
+        const rowG = gBars.selectAll('g.rowg').data(rows, r => r.key);
+        rowG.exit().remove();
+        const rowGEnter = rowG.enter().append('g').attr('class', 'rowg');
+        rowGEnter.append('rect').attr('class', 'hit hit-label');
+        rowGEnter.append('rect').attr('class', 'hit hit-bar');
+        const rowGAll = rowGEnter.merge(rowG);
+
+        const barTop = (r) => ty(r.key) + (rowH - barH) / 2;
+        rowGAll.select('rect.hit-label')
+          .attr('x', 0).attr('y', barTop).attr('width', Math.max(0, margin.left - 2)).attr('height', barH)
+          .on('mouseenter', onEnter).on('mousemove', onMove).on('mouseleave', onLeave);
+        rowGAll.select('rect.hit-bar')
+          .attr('x', margin.left).attr('y', barTop)
+          .attr('width', r => Math.max(2, x(metricVal(r)))).attr('height', barH)
+          .on('mouseenter', onEnter).on('mousemove', onMove).on('mouseleave', onLeave);
+
+        const segSel = rowGAll.selectAll('rect.seg').data(r => {
+          let acc = 0;
+          return SEGMENTS.map(s => {
+            const v = valueOf(r, s); const x0 = acc; acc += v;
+            return { key: r.key, seg: s, x0, x1: acc };
+          }).filter(d => d.x1 > d.x0);
+        }, d => d.key + '|' + d.seg);
+        segSel.exit().remove();
+        segSel.enter().append('rect').attr('class', 'seg')
+          .merge(segSel)
+          .attr('x', d => tx(d.x0)).attr('y', d => ty(d.key) + (rowH - barH) / 2)
+          .attr('width', d => Math.max(0, x(d.x1) - x(d.x0))).attr('height', barH)
+          .attr('fill', d => COLOR[d.seg]);
+
+        // reference lines (rate mode only)
+        const refSel = gRefs.selectAll('g.ref').data(showRefs ? refs : [], d => d.label);
+        refSel.exit().remove();
+        const refEnter = refSel.enter().append('g').attr('class', 'ref');
+        refEnter.append('line').attr('class', 'ref-line');
+        refEnter.append('text').attr('class', 'ref-text');
+        const refAll = refEnter.merge(refSel);
+        const refVal = (d) => metric === 'rate' ? d.rate : d.perbtok;
+        refAll.select('line').attr('x1', d => tx(refVal(d))).attr('x2', d => tx(refVal(d)))
+          .attr('y1', margin.top).attr('y2', margin.top + innerH + axisGap);
+        // stagger the two labels above the plot so they never collide or clip
+        refAll.select('text').attr('x', d => tx(refVal(d))).attr('y', (d, i) => i === 0 ? 10 : 22)
+          .attr('text-anchor', 'middle').attr('font-size', (fontSize * 0.82) + 'px')
+          .text(d => metric === 'rate' ? `${d.label} ${fmtPctShort(d.rate)}` : `${d.label} ${fmtPerB(d.perbtok)}/Btok`);
+
+        // y labels + baseline markers
+        const labSel = gLabels.selectAll('g.lab').data(rows, r => r.key);
+        labSel.exit().remove();
+        const labEnter = labSel.enter().append('g').attr('class', 'lab');
+        labEnter.append('text').attr('class', 'row-marker');
+        labEnter.append('text').attr('class', 'row-label');
+        const labAll = labEnter.merge(labSel);
+        const markerSlot = fontSize + 5; // room for the diamond plus a gap before the label
+        labAll.select('text.row-marker')
+          .attr('x', margin.left - 6).attr('y', r => ty(r.key) + rowH / 2)
+          .attr('text-anchor', 'end').attr('dominant-baseline', 'central')
+          .attr('font-size', (fontSize * 0.82) + 'px')
+          .text(r => r.marker || '');
+        labAll.select('text.row-label')
+          .attr('x', r => margin.left - 6 - (r.marker ? markerSlot : 0))
+          .attr('y', r => ty(r.key) + rowH / 2)
+          .attr('text-anchor', 'end').attr('dominant-baseline', 'central')
+          .attr('font-size', fontSize + 'px')
+          .attr('font-weight', 500)
+          .text(r => r.label);
+      };
+
+      // ─── controls (below chart) ───
+      const controls = document.createElement('div'); controls.className = 'controls';
+      const uid = Math.random().toString(36).slice(2, 7);
+
+      const viewGroup = document.createElement('div'); viewGroup.className = 'control-group';
+      const viewLabel = document.createElement('span'); viewLabel.className = 'label'; viewLabel.textContent = 'Group by';
+      const viewPills = document.createElement('div'); viewPills.className = 'pills';
+      [['type', 'Type'], ['prompt', 'Prompt'], ['model', 'Model'], ['dataset', 'Dataset']].forEach(([val, txt]) => {
+        const p = document.createElement('button'); p.className = 'pill' + (val === groupBy ? ' active' : ''); p.textContent = txt; p.type = 'button';
+        p.addEventListener('click', () => {
+          groupBy = val; viewPills.querySelectorAll('.pill').forEach(el => el.classList.remove('active')); p.classList.add('active'); render();
+        });
+        viewPills.appendChild(p);
+      });
+      viewGroup.appendChild(viewLabel); viewGroup.appendChild(viewPills);
+
+      const metricGroup = document.createElement('div'); metricGroup.className = 'control-group';
+      const metricLabel = document.createElement('label'); metricLabel.setAttribute('for', `metric-${uid}`); metricLabel.textContent = 'Metric';
+      const metricSelect = document.createElement('select'); metricSelect.id = `metric-${uid}`;
+      [['perbtok', 'Flagged docs / billion tokens'], ['rate', 'Flagged docs / sampled docs (%)']].forEach(([val, txt]) => {
+        const o = document.createElement('option'); o.value = val; o.textContent = txt; metricSelect.appendChild(o);
+      });
+      metricSelect.value = metric;
+      metricSelect.addEventListener('change', () => { metric = metricSelect.value; render(); });
+      metricGroup.appendChild(metricLabel); metricGroup.appendChild(metricSelect);
+
+      controls.appendChild(viewGroup); controls.appendChild(metricGroup);
+      container.appendChild(controls);
+
+      // ─── legend ───
+      const legend = document.createElement('div'); legend.className = 'legend';
+      const lt = document.createElement('div'); lt.className = 'legend-title'; lt.textContent = 'Legend';
+      const items = document.createElement('div'); items.className = 'items';
+      SEGMENTS.forEach(s => {
+        const it = document.createElement('span'); it.className = 'item';
+        const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = COLOR[s];
+        const tx = document.createElement('span'); tx.textContent = BENCH_LABEL[s];
+        it.appendChild(sw); it.appendChild(tx); items.appendChild(it);
+      });
+      const note = document.createElement('div'); note.className = 'note';
+      note.innerHTML = '\u25C6 synthetic baseline &nbsp; \u25C7 original / curated-web baseline &nbsp; (no marker = FinePhrase rephrased). Each corpus is subsampled to ~5B tokens for comparability.';
+      legend.appendChild(lt); legend.appendChild(items); legend.appendChild(note);
+      container.appendChild(legend);
+
+      render();
+      if (window.ResizeObserver) new ResizeObserver(() => render()).observe(container);
+      else window.addEventListener('resize', render);
+    }
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+  else ensureD3(bootstrap);
+})();
+</script>

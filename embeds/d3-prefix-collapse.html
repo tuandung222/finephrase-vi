@@ -1,0 +1,369 @@
+<div class="d3-prefix-collapse"></div>
+<style>
+  .d3-prefix-collapse { position: relative; }
+  .d3-prefix-collapse .controls {
+    display: flex; gap: 24px; align-items: flex-start; justify-content: space-between;
+    flex-wrap: wrap; margin: 0 0 8px 0;
+  }
+  .d3-prefix-collapse .controls .control-group {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  }
+  .d3-prefix-collapse .controls label {
+    font-size: 12px; font-weight: 700; color: var(--text-color);
+  }
+  .d3-prefix-collapse .controls select {
+    font-size: 12px; padding: 6px 28px 6px 10px;
+    border: 1px solid var(--border-color); border-radius: 8px;
+    background: var(--surface-bg); color: var(--text-color); cursor: pointer;
+  }
+  .d3-prefix-collapse .pills {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .d3-prefix-collapse .pill {
+    font-size: 12px; padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--border-color); background: var(--surface-bg);
+    color: var(--muted-color); cursor: pointer; user-select: none;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .d3-prefix-collapse .pill:hover { border-color: var(--text-color); }
+  .d3-prefix-collapse .pill.active {
+    color: var(--surface-bg); background: var(--text-color);
+    border-color: var(--text-color); font-weight: 600;
+  }
+  .d3-prefix-collapse .pill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--pill-color, currentColor);
+  }
+  .d3-prefix-collapse .legend {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+    margin: 8px 0 0 0;
+  }
+  .d3-prefix-collapse .legend .legend-title {
+    font-size: 12px; font-weight: 700; color: var(--text-color);
+  }
+  .d3-prefix-collapse .legend .items {
+    display: flex; flex-wrap: wrap; gap: 8px 14px;
+  }
+  .d3-prefix-collapse .legend .item {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    color: var(--text-color);
+  }
+  .d3-prefix-collapse .legend .swatch {
+    width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border-color);
+  }
+  .d3-prefix-collapse .d3-tooltip {
+    position: absolute; top: 0; left: 0;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none; padding: 8px 12px; border-radius: 8px;
+    font-size: 12px; line-height: 1.4;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg); color: var(--text-color);
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    opacity: 0; transition: opacity .12s ease; min-width: 180px;
+  }
+  .d3-prefix-collapse .d3-tooltip .row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .d3-prefix-collapse .d3-tooltip .row .name {
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .d3-prefix-collapse .d3-tooltip .row .swatch {
+    width: 10px; height: 10px; border-radius: 2px;
+  }
+  .d3-prefix-collapse .axes path,
+  .d3-prefix-collapse .axes line { stroke: var(--axis-color); }
+  .d3-prefix-collapse .axes text { fill: var(--tick-color); font-size: 12px; }
+  .d3-prefix-collapse .grid line { stroke: var(--grid-color); }
+  .d3-prefix-collapse .x-label,
+  .d3-prefix-collapse .y-label { fill: var(--text-color); font-size: 13px; }
+  .d3-prefix-collapse .point { cursor: pointer; }
+  .d3-prefix-collapse .hover-line { stroke: var(--muted-color); stroke-dasharray: 3 3; }
+</style>
+<script>
+(() => {
+  const ensureD3 = (cb) => {
+    if (window.d3 && typeof window.d3.select === 'function') return cb();
+    let s = document.getElementById('d3-cdn-script');
+    if (!s) { s = document.createElement('script'); s.id = 'd3-cdn-script'; s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js'; document.head.appendChild(s); }
+    const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+    s.addEventListener('load', onReady, { once: true });
+    if (window.d3) onReady();
+  };
+
+  const bootstrap = () => {
+    const scriptEl = document.currentScript;
+    let container = scriptEl ? scriptEl.previousElementSibling : null;
+    if (!(container && container.classList && container.classList.contains('d3-prefix-collapse'))) {
+      const cs = Array.from(document.querySelectorAll('.d3-prefix-collapse'))
+        .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+      container = cs[cs.length - 1] || null;
+    }
+    if (!container) return;
+    if (container.dataset) {
+      if (container.dataset.mounted === 'true') return;
+      container.dataset.mounted = 'true';
+    }
+    container.style.position = container.style.position || 'relative';
+
+    const METRICS = {
+      most_common_count: {
+        label: 'Most common prefix (count)',
+        y: 'most_common_count',
+        yLabel: 'Outputs sharing the most-common prefix',
+        higherIs: 'more collapse',
+      },
+      distinct: {
+        label: 'Distinct prefixes (count)',
+        y: 'distinct',
+        yLabel: 'Distinct prefixes (out of all outputs)',
+        higherIs: 'more diversity',
+      },
+    };
+    const DEFAULT_VISIBLE = new Set(['SmolLM2', 'Qwen3']);
+    // Filled once the data loads (preserves CSV insertion order).
+    let MODELS = [];
+    const visible = new Set();
+
+    // Controls: model toggle pills on the left, metric selector on the right.
+    const controls = document.createElement('div');
+    controls.className = 'controls';
+
+    const modelGroup = document.createElement('div');
+    modelGroup.className = 'control-group';
+    const modelLabel = document.createElement('label');
+    modelLabel.textContent = 'Models (click to toggle)';
+    modelGroup.appendChild(modelLabel);
+    const pillRow = document.createElement('div');
+    pillRow.className = 'pills';
+    modelGroup.appendChild(pillRow);
+    controls.appendChild(modelGroup);
+
+    const metricGroup = document.createElement('div');
+    metricGroup.className = 'control-group';
+    const labelEl = document.createElement('label');
+    const selectId = `metric-select-${Math.random().toString(36).slice(2, 8)}`;
+    labelEl.htmlFor = selectId;
+    labelEl.textContent = 'Metric';
+    const select = document.createElement('select');
+    select.id = selectId;
+    Object.entries(METRICS).forEach(([key, m]) => {
+      const opt = document.createElement('option');
+      opt.value = key; opt.textContent = m.label;
+      select.appendChild(opt);
+    });
+    metricGroup.appendChild(labelEl);
+    metricGroup.appendChild(select);
+    controls.appendChild(metricGroup);
+
+    container.appendChild(controls);
+
+    // Tooltip
+    const tip = document.createElement('div');
+    tip.className = 'd3-tooltip';
+    const tipInner = document.createElement('div');
+    tip.appendChild(tipInner);
+    container.appendChild(tip);
+
+    const showTip = (html, event) => {
+      tipInner.innerHTML = html;
+      tip.style.opacity = '1';
+      const cr = container.getBoundingClientRect();
+      const [mx, my] = [event.clientX - cr.left, event.clientY - cr.top];
+      const tw = tip.offsetWidth;
+      const x = mx + tw + 16 > cr.width ? mx - tw - 12 : mx + 12;
+      tip.style.transform = `translate(${x}px, ${my - 40}px)`;
+    };
+    const hideTip = () => { tip.style.opacity = '0'; tip.style.transform = 'translate(-9999px,-9999px)'; };
+
+    const svg = d3.select(container).append('svg').attr('width', '100%').style('display', 'block');
+    const gRoot = svg.append('g');
+
+    // We keep the model toggles in `pillRow`; no separate legend block needed
+    // because the pills themselves serve as the legend.
+
+    const getColors = () => {
+      // Stable categorical assignment by MODELS insertion order.
+      const cat = window.ColorPalettes
+        ? window.ColorPalettes.getColors('categorical', Math.max(6, MODELS.length))
+        : ['#3fb950', '#f85149', '#58a6ff', '#f0883e', '#bc8cff', '#f7c843'];
+      const out = {};
+      MODELS.forEach((m, i) => { out[m] = cat[i % cat.length]; });
+      return out;
+    };
+
+    function buildPills(colors) {
+      pillRow.innerHTML = '';
+      MODELS.forEach(name => {
+        const pill = document.createElement('span');
+        pill.className = 'pill' + (visible.has(name) ? ' active' : '');
+        pill.style.setProperty('--pill-color', colors[name]);
+        pill.innerHTML = `<span class="dot"></span>${name}`;
+        pill.addEventListener('click', () => {
+          if (visible.has(name)) {
+            if (visible.size > 1) visible.delete(name);
+          } else {
+            visible.add(name);
+          }
+          render();
+        });
+        pillRow.appendChild(pill);
+      });
+    }
+
+    const margin = { top: 16, right: 24, bottom: 50, left: 64 };
+    let chartData = null;
+    let currentMetric = 'most_common_count';
+
+    function fetchCSV() {
+      const paths = [
+        '/data/qwen3_vs_smollm2_prefix_collapse.csv',
+        './assets/data/qwen3_vs_smollm2_prefix_collapse.csv',
+        '../assets/data/qwen3_vs_smollm2_prefix_collapse.csv',
+      ];
+      return (async () => {
+        for (const p of paths) {
+          try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return await r.text(); } catch (_) {}
+        }
+        throw new Error('CSV not found');
+      })();
+    }
+
+    function render() {
+      if (!chartData) return;
+      const colors = getColors();
+      buildPills(colors);
+      const visibleModels = MODELS.filter(m => visible.has(m));
+
+      const width = container.clientWidth || 800;
+      const height = Math.max(280, Math.round(width / 2.6));
+      svg.attr('width', width).attr('height', height);
+      gRoot.attr('transform', `translate(${margin.left},${margin.top})`);
+
+      const iw = width - margin.left - margin.right;
+      const ih = height - margin.top - margin.bottom;
+
+      const metric = METRICS[currentMetric];
+      const yKey = metric.y;
+
+      const xExtent = d3.extent(chartData, d => d.prefix_chars);
+      // Scale y to the max among visible models so the chart adapts to selection.
+      const visibleData = chartData.filter(d => visible.has(d.model));
+      const yMax = d3.max(visibleData, d => d[yKey]) || 1;
+
+      const x = d3.scaleLinear().domain(xExtent).range([0, iw]).nice();
+      const y = d3.scaleLinear().domain([0, yMax * 1.05]).range([ih, 0]).nice();
+
+      gRoot.selectAll('*').remove();
+
+      const gridG = gRoot.append('g').attr('class', 'grid');
+      gridG.selectAll('line').data(y.ticks(6)).join('line')
+        .attr('x1', 0).attr('x2', iw)
+        .attr('y1', d => y(d)).attr('y2', d => y(d));
+
+      const axesG = gRoot.append('g').attr('class', 'axes');
+      axesG.append('g').attr('transform', `translate(0,${ih})`)
+        .call(d3.axisBottom(x).ticks(8).tickFormat(d => d));
+      axesG.append('g')
+        .call(d3.axisLeft(y).ticks(6).tickSize(-iw))
+        .call(g => g.selectAll('.tick line').attr('stroke', 'var(--grid-color)'))
+        .call(g => g.select('.domain').remove());
+
+      gRoot.append('text').attr('class', 'x-label')
+        .attr('x', iw / 2).attr('y', ih + 40)
+        .attr('text-anchor', 'middle').text('Prefix length (characters)');
+
+      gRoot.append('text').attr('class', 'y-label')
+        .attr('transform', 'rotate(-90)')
+        .attr('x', -ih / 2).attr('y', -50)
+        .attr('text-anchor', 'middle').text(metric.yLabel);
+
+      // Lines + points per visible model.
+      const line = d3.line()
+        .x(d => x(d.prefix_chars))
+        .y(d => y(d[yKey]));
+
+      visibleModels.forEach(name => {
+        const series = chartData.filter(d => d.model === name).sort((a, b) => a.prefix_chars - b.prefix_chars);
+        gRoot.append('path')
+          .datum(series)
+          .attr('fill', 'none')
+          .attr('stroke', colors[name])
+          .attr('stroke-width', 2.5)
+          .attr('d', line);
+        gRoot.append('g').selectAll('circle').data(series).join('circle')
+          .attr('class', 'point')
+          .attr('cx', d => x(d.prefix_chars))
+          .attr('cy', d => y(d[yKey]))
+          .attr('r', 3.5)
+          .attr('fill', colors[name])
+          .attr('stroke', 'var(--surface-bg)')
+          .attr('stroke-width', 1);
+      });
+
+      // Hover overlay: vertical bisector that lists every visible model at the
+      // nearest prefix length.
+      const allPrefix = Array.from(new Set(chartData.map(d => d.prefix_chars))).sort((a, b) => a - b);
+      const overlay = gRoot.append('rect')
+        .attr('width', iw).attr('height', ih)
+        .attr('fill', 'transparent');
+      const hoverLine = gRoot.append('line')
+        .attr('class', 'hover-line')
+        .attr('y1', 0).attr('y2', ih)
+        .style('opacity', 0);
+
+      overlay
+        .on('mousemove', function (event) {
+          const [mx] = d3.pointer(event);
+          const xv = x.invert(mx);
+          const nearest = allPrefix.reduce((a, b) => Math.abs(b - xv) < Math.abs(a - xv) ? b : a);
+          hoverLine.attr('x1', x(nearest)).attr('x2', x(nearest)).style('opacity', 1);
+          const N = d3.max(chartData, d => d.distinct);
+          const rows = visibleModels.map(m => {
+            const d = chartData.find(r => r.model === m && r.prefix_chars === nearest);
+            return `<div class="row">
+              <span class="name"><span class="swatch" style="background:${colors[m]}"></span>${m}</span>
+              <span><strong>${d[yKey].toLocaleString()}</strong> / ${N.toLocaleString()}</span>
+            </div>`;
+          }).join('');
+          showTip(`<div><strong>Prefix: ${nearest} chars</strong></div>${rows}`, event);
+        })
+        .on('mouseleave', () => { hoverLine.style('opacity', 0); hideTip(); });
+    }
+
+    select.addEventListener('change', () => { currentMetric = select.value; render(); });
+
+    fetchCSV().then(text => {
+      chartData = d3.csvParse(text, d => ({
+        model: d.model,
+        prefix_chars: +d.prefix_chars,
+        most_common_count: +d.most_common_count,
+        distinct: +d.distinct,
+      }));
+      // Preserve CSV insertion order for the model list.
+      MODELS = [];
+      for (const r of chartData) if (!MODELS.includes(r.model)) MODELS.push(r.model);
+      const defaults = MODELS.filter(m => DEFAULT_VISIBLE.has(m));
+      (defaults.length ? defaults : MODELS.slice(0, 3)).forEach(m => visible.add(m));
+      render();
+    }).catch(err => {
+      const pre = document.createElement('pre');
+      pre.style.color = 'red';
+      pre.textContent = `Error loading data: ${err.message}`;
+      container.appendChild(pre);
+    });
+
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => render()).observe(container);
+    } else {
+      window.addEventListener('resize', render);
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+  } else {
+    ensureD3(bootstrap);
+  }
+})();
+</script>

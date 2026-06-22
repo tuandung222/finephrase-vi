@@ -1,0 +1,346 @@
+<div class="math-adherence-audit"></div>
+<style>
+  .math-adherence-audit { position: relative; }
+  .math-adherence-audit .controls {
+    display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin: 0 0 12px 0;
+  }
+  .math-adherence-audit .controls .control-group {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  }
+  .math-adherence-audit .controls .label {
+    font-size: 12px; font-weight: 700; color: var(--text-color);
+  }
+  .math-adherence-audit .pills {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .math-adherence-audit .pill {
+    font-size: 12px; padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--border-color); background: var(--surface-bg);
+    color: var(--muted-color); cursor: pointer; user-select: none;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .math-adherence-audit .pill:hover {
+    border-color: var(--text-color);
+  }
+  .math-adherence-audit .pill.active {
+    color: var(--surface-bg);
+    background: var(--text-color);
+    border-color: var(--text-color);
+    font-weight: 600;
+  }
+  .math-adherence-audit .pill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--pill-color, currentColor);
+  }
+  .math-adherence-audit .table-scroll {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+  }
+  .math-adherence-audit table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    min-width: 100%;
+  }
+  .math-adherence-audit th, .math-adherence-audit td {
+    padding: 8px 10px; text-align: right; color: var(--text-color);
+    border-bottom: 1px solid var(--border-color);
+  }
+  .math-adherence-audit th:first-child, .math-adherence-audit td:first-child {
+    text-align: left; font-weight: 500;
+  }
+  .math-adherence-audit th {
+    font-size: 12px; font-weight: 700; color: var(--text-color);
+    border-bottom: 2px solid var(--border-color);
+  }
+  .math-adherence-audit tr.group-header td {
+    background: transparent;
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--muted-color);
+    padding-top: 14px; padding-bottom: 4px;
+    border-bottom: none;
+  }
+  .math-adherence-audit td.value {
+    font-variant-numeric: tabular-nums;
+    position: relative;
+    overflow: hidden;
+  }
+  .math-adherence-audit td.value .bar {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    background: var(--primary-color); opacity: 0.12;
+    pointer-events: none; z-index: 0;
+  }
+  .math-adherence-audit td.value .v {
+    position: relative; z-index: 1;
+  }
+  .math-adherence-audit td.value.is-max .v { font-weight: 700; }
+  .math-adherence-audit td .metric-label {
+    cursor: help;
+    border-bottom: 1px dotted var(--muted-color);
+  }
+  .math-adherence-audit .info-tip {
+    position: absolute; top: 0; left: 0;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none; padding: 10px 12px; border-radius: 8px;
+    font-size: 12px; line-height: 1.45;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg); color: var(--text-color);
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    opacity: 0; transition: opacity .12s ease;
+    max-width: 340px;
+    z-index: 20;
+  }
+</style>
+<script>
+(() => {
+  const bootstrap = () => {
+    const scriptEl = document.currentScript;
+    let container = scriptEl ? scriptEl.previousElementSibling : null;
+    if (!(container && container.classList && container.classList.contains('math-adherence-audit'))) {
+      const cs = Array.from(document.querySelectorAll('.math-adherence-audit'))
+        .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+      container = cs[cs.length - 1] || null;
+    }
+    if (!container) return;
+    if (container.dataset) {
+      if (container.dataset.mounted === 'true') return;
+      container.dataset.mounted = 'true';
+    }
+
+    const DEFAULT_VISIBLE = new Set(['SmolLM2', 'Qwen3', 'Llama 3.2']);
+
+    const fetchCSV = async () => {
+      const paths = [
+        '/data/math_format_adherence.csv',
+        './assets/data/math_format_adherence.csv',
+        '../assets/data/math_format_adherence.csv',
+      ];
+      for (const p of paths) {
+        try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return await r.text(); } catch (_) {}
+      }
+      throw new Error('CSV not found');
+    };
+
+    // CSV parser that handles double-quoted fields (pandas auto-quotes fields
+    // containing commas, e.g. "Implicit math (operators, no closed equation)").
+    const parseCSVLine = (line) => {
+      const out = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (inQuotes) {
+          if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+          else if (ch === '"') { inQuotes = false; }
+          else { cur += ch; }
+        } else {
+          if (ch === '"') { inQuotes = true; }
+          else if (ch === ',') { out.push(cur); cur = ''; }
+          else { cur += ch; }
+        }
+      }
+      out.push(cur);
+      return out;
+    };
+    const parseCSV = (text) => {
+      const lines = text.trim().split('\n');
+      const cols = parseCSVLine(lines.shift());
+      return lines.map(l => {
+        const cells = parseCSVLine(l);
+        const o = {};
+        cols.forEach((c, i) => { o[c] = cells[i]; });
+        return o;
+      });
+    };
+
+    const fmtValue = (v, fmt) => fmt === '%' ? `${(+v).toFixed(1)}%` : (+v).toFixed(3);
+
+    const render = (rows) => {
+      // Preserve original metric and model order from the CSV.
+      const metrics = [];
+      const metricMeta = {};
+      const models = [];
+      for (const r of rows) {
+        if (!metricMeta[r.metric]) {
+          metricMeta[r.metric] = {
+            group: r.group,
+            format: r.format,
+            direction: r.direction || 'higher',
+            description: r.description || '',
+          };
+          metrics.push(r.metric);
+        }
+        if (!models.includes(r.model)) models.push(r.model);
+      }
+      const grouped = {};
+      for (const r of rows) {
+        grouped[r.metric] = grouped[r.metric] || {};
+        grouped[r.metric][r.model] = +r.value;
+      }
+
+      const state = {
+        visible: new Set([...models.filter(m => DEFAULT_VISIBLE.has(m))]),
+      };
+      if (state.visible.size === 0) state.visible = new Set(models.slice(0, 3));
+
+      container.innerHTML = '';
+
+      // Tooltip for metric descriptions
+      const tip = document.createElement('div');
+      tip.className = 'info-tip';
+      container.appendChild(tip);
+      const showTip = (html, event) => {
+        tip.innerHTML = html;
+        tip.style.opacity = '1';
+        const cr = container.getBoundingClientRect();
+        const [mx, my] = [event.clientX - cr.left, event.clientY - cr.top];
+        const tw = tip.offsetWidth;
+        const x = mx + tw + 16 > cr.width ? Math.max(0, mx - tw - 12) : mx + 14;
+        tip.style.transform = `translate(${x}px, ${my + 14}px)`;
+      };
+      const hideTip = () => { tip.style.opacity = '0'; tip.style.transform = 'translate(-9999px,-9999px)'; };
+
+      // Pills
+      const controls = document.createElement('div');
+      controls.className = 'controls';
+      const grp = document.createElement('div');
+      grp.className = 'control-group';
+      const lab = document.createElement('div');
+      lab.className = 'label';
+      lab.textContent = 'Models (click to toggle)';
+      grp.appendChild(lab);
+      // Stable categorical color per model, matching the prefix-collapse chart.
+      const palette = window.ColorPalettes
+        ? window.ColorPalettes.getColors('categorical', Math.max(6, models.length))
+        : ['#3fb950', '#f85149', '#58a6ff', '#f0883e', '#bc8cff', '#f7c843'];
+      const modelColor = Object.fromEntries(models.map((m, i) => [m, palette[i % palette.length]]));
+
+      const pillRow = document.createElement('div');
+      pillRow.className = 'pills';
+      models.forEach(m => {
+        const pill = document.createElement('span');
+        pill.className = 'pill' + (state.visible.has(m) ? ' active' : '');
+        pill.style.setProperty('--pill-color', modelColor[m]);
+        pill.innerHTML = `<span class="dot"></span>${m}`;
+        pill.addEventListener('click', () => {
+          if (state.visible.has(m)) {
+            if (state.visible.size > 1) state.visible.delete(m);
+          } else {
+            state.visible.add(m);
+          }
+          drawTable();
+        });
+        pillRow.appendChild(pill);
+      });
+      grp.appendChild(pillRow);
+      controls.appendChild(grp);
+      container.appendChild(controls);
+
+      const tableWrap = document.createElement('div');
+      tableWrap.className = 'table-scroll';
+      container.appendChild(tableWrap);
+
+      const drawTable = () => {
+        // Refresh pills
+        Array.from(pillRow.children).forEach((pill, i) => {
+          pill.classList.toggle('active', state.visible.has(models[i]));
+        });
+
+        const visibleModels = models.filter(m => state.visible.has(m));
+        const table = document.createElement('table');
+        const thead = document.createElement('thead');
+        const trh = document.createElement('tr');
+        trh.appendChild(Object.assign(document.createElement('th'), { textContent: 'Metric' }));
+        visibleModels.forEach(m => {
+          trh.appendChild(Object.assign(document.createElement('th'), { textContent: m }));
+        });
+        thead.appendChild(trh);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        let currentGroup = null;
+        metrics.forEach(metric => {
+          const meta = metricMeta[metric];
+          if (meta.group !== currentGroup) {
+            const groupTr = document.createElement('tr');
+            groupTr.className = 'group-header';
+            const td = document.createElement('td');
+            td.colSpan = visibleModels.length + 1;
+            td.textContent = meta.group;
+            groupTr.appendChild(td);
+            tbody.appendChild(groupTr);
+            currentGroup = meta.group;
+          }
+
+          const tr = document.createElement('tr');
+          const labelTd = document.createElement('td');
+          const labelSpan = document.createElement('span');
+          labelSpan.className = 'metric-label';
+          labelSpan.textContent = metric;
+          if (meta.description) {
+            const descHTML = `<strong>${metric}</strong><br/><span style="color:var(--muted-color)">${meta.description}</span>`;
+            labelSpan.addEventListener('mouseenter', (e) => showTip(descHTML, e));
+            labelSpan.addEventListener('mousemove', (e) => showTip(descHTML, e));
+            labelSpan.addEventListener('mouseleave', hideTip);
+          }
+          labelTd.appendChild(labelSpan);
+          tr.appendChild(labelTd);
+
+          const vals = visibleModels.map(m => grouped[metric][m]);
+          const maxVal = Math.max(...vals);
+          const minVal = Math.min(...vals);
+          // Best cell index depends on whether higher or lower is better.
+          // Neutral metrics get no highlight.
+          let bestIdx = -1;
+          if (meta.direction === 'higher' && vals.length > 1) bestIdx = vals.indexOf(maxVal);
+          else if (meta.direction === 'lower' && vals.length > 1) bestIdx = vals.indexOf(minVal);
+
+          visibleModels.forEach((m, i) => {
+            const td = document.createElement('td');
+            td.className = 'value' + (i === bestIdx ? ' is-max' : '');
+            if (meta.direction !== 'neutral') {
+              const bar = document.createElement('span');
+              bar.className = 'bar';
+              // For "lower-is-better" metrics, invert so the smallest value gets the longest bar.
+              let norm;
+              if (meta.direction === 'higher') {
+                norm = maxVal > 0 ? vals[i] / maxVal : 0;
+              } else {
+                // direction === 'lower'; rescale so min -> 1, max -> small floor
+                const range = maxVal - minVal;
+                norm = range > 0 ? 1 - (vals[i] - minVal) / range * 0.85 : 1;
+              }
+              bar.style.width = `${(norm * 100).toFixed(1)}%`;
+              td.appendChild(bar);
+            }
+            const v = document.createElement('span');
+            v.className = 'v';
+            v.textContent = fmtValue(vals[i], meta.format);
+            td.appendChild(v);
+            tr.appendChild(td);
+          });
+
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        tableWrap.innerHTML = '';
+        tableWrap.appendChild(table);
+      };
+
+      drawTable();
+    };
+
+    fetchCSV().then(text => render(parseCSV(text))).catch(err => {
+      const pre = document.createElement('pre');
+      pre.style.color = 'red';
+      pre.textContent = `Error loading audit data: ${err.message}`;
+      container.appendChild(pre);
+    });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
+  } else {
+    bootstrap();
+  }
+})();
+</script>

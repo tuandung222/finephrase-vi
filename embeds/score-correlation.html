@@ -1,0 +1,663 @@
+<div class="d3-score-correlation" style="width:100%;margin:10px 0;min-height:400px;"></div>
+<style>
+  .d3-score-correlation { font-family: system-ui, -apple-system, sans-serif; position: relative; overflow-x: hidden; }
+  .d3-score-correlation .d3-tooltip {
+    position: absolute; top: 0; left: 0;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none;
+    padding: 10px 14px; border-radius: 10px;
+    font-size: 12px; line-height: 1.4;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg); color: var(--text-color);
+    box-shadow: 0 6px 24px rgba(0,0,0,.22);
+    opacity: 0; transition: opacity .12s ease;
+    z-index: 20; max-width: 300px;
+  }
+  .d3-score-correlation .legend {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+    margin-top: 8px;
+  }
+  .d3-score-correlation .legend-title {
+    font-size: 12px; font-weight: 700; color: var(--text-color);
+  }
+  .d3-score-correlation .legend .items {
+    display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
+  }
+  .d3-score-correlation .legend .item {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-color);
+  }
+  .d3-score-correlation .legend .swatch {
+    width: 20px; height: 14px; border-radius: 3px; border: 1px solid var(--border-color);
+  }
+  @media (max-width: 640px) {
+    .d3-score-correlation .legend .item { font-size: 10px; }
+    .d3-score-correlation .legend .swatch { width: 16px; height: 12px; }
+  }
+</style>
+<script>
+(() => {
+  const ensureD3 = (cb) => {
+    if (window.d3 && typeof window.d3.select === 'function') return cb();
+    let s = document.getElementById('d3-cdn-script');
+    if (!s) { s = document.createElement('script'); s.id = 'd3-cdn-script'; s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js'; document.head.appendChild(s); }
+    const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+    s.addEventListener('load', onReady, { once: true });
+    if (window.d3) onReady();
+  };
+
+  const bootstrap = () => {
+    const scriptEl = document.currentScript;
+    let container = scriptEl ? scriptEl.previousElementSibling : null;
+    while (container && !(container.classList && container.classList.contains('d3-score-correlation'))) {
+      container = container.previousElementSibling;
+    }
+    if (!container) {
+      const cs = Array.from(document.querySelectorAll('.d3-score-correlation'))
+        .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+      container = cs[cs.length - 1] || null;
+    }
+    if (!container) return;
+    if (container.dataset.mounted === 'true') return;
+    container.dataset.mounted = 'true';
+
+    let mountEl = container;
+    while (mountEl && !mountEl.getAttribute?.('data-datafiles')) mountEl = mountEl.parentElement;
+    const dataAttr = mountEl?.getAttribute?.('data-datafiles');
+    const dataPaths = dataAttr
+      ? [dataAttr.includes('/') ? dataAttr : `/data/${dataAttr}`]
+      : ['/data/rephrasing_metadata.json', './assets/data/rephrasing_metadata.json'];
+
+    const fetchFirst = async (paths) => {
+      for (const p of paths) {
+        try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return r.json(); } catch(_) {}
+      }
+      throw new Error('Data not found');
+    };
+
+    fetchFirst(dataPaths).then(data => buildChart(data)).catch(err => {
+      container.innerHTML = `<pre style="color:red;padding:12px;">Error: ${err.message}</pre>`;
+    });
+
+    function buildChart(rawData) {
+      // Spearman correlation helpers
+      const rankArray = (arr) => {
+        const indexed = arr.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
+        const ranks = new Array(arr.length);
+        let i = 0;
+        while (i < indexed.length) {
+          let j = i;
+          while (j < indexed.length && indexed[j].v === indexed[i].v) j++;
+          const avgRank = (i + j + 1) / 2;
+          for (let k = i; k < j; k++) ranks[indexed[k].i] = avgRank;
+          i = j;
+        }
+        return ranks;
+      };
+
+      const spearman = (x, y) => {
+        const n = x.length;
+        if (n < 5) return { r: 0, p: 1 };
+        const rx = rankArray(x), ry = rankArray(y);
+        const mx = rx.reduce((a, b) => a + b, 0) / n;
+        const my = ry.reduce((a, b) => a + b, 0) / n;
+        let num = 0, dx2 = 0, dy2 = 0;
+        for (let i = 0; i < n; i++) {
+          const dx = rx[i] - mx, dy = ry[i] - my;
+          num += dx * dy; dx2 += dx * dx; dy2 += dy * dy;
+        }
+        const r = dx2 && dy2 ? num / Math.sqrt(dx2 * dy2) : 0;
+        const t = r * Math.sqrt((n - 2) / (1 - r * r + 1e-15));
+        const df = n - 2;
+        const p = df > 30 ? 2 * (1 - normalCDF(Math.abs(t))) : 2 * (1 - tCDF(Math.abs(t), df));
+        return { r, p };
+      };
+
+      const normalCDF = (x) => {
+        const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429;
+        const p = 0.3275911, sign = x < 0 ? -1 : 1;
+        x = Math.abs(x) / Math.sqrt(2);
+        const t = 1.0 / (1.0 + p * x);
+        const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+        return 0.5 * (1.0 + sign * y);
+      };
+
+      const tCDF = (t, df) => 1 - 0.5 * incompleteBeta(df / 2, 0.5, df / (df + t * t));
+
+      const incompleteBeta = (a, b, x) => {
+        if (x === 0 || x === 1) return x;
+        const lnBeta = lgamma(a) + lgamma(b) - lgamma(a + b);
+        const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b - lnBeta);
+        let sum = 1, term = 1;
+        for (let n = 0; n < 200; n++) {
+          term *= (n === 0 ? 1 : (a + n - 1)) * x / (a + n);
+          if (n > 0) term *= (n - b) / n;
+          sum += term;
+          if (Math.abs(term) < 1e-10) break;
+        }
+        return front * sum / a;
+      };
+
+      const lgamma = (x) => {
+        const c = [76.18009172947146, -86.50532032941677, 24.01409824083091,
+          -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+        let y = x, tmp = x + 5.5;
+        tmp -= (x + 0.5) * Math.log(tmp);
+        let ser = 1.000000000190015;
+        for (let j = 0; j < 6; j++) ser += c[j] / ++y;
+        return -tmp + Math.log(2.5066282746310005 * ser / x);
+      };
+
+      // Benchmark descriptions for tooltips
+      const BENCH_DESC = {
+        'agg_score_macro': 'Mean of the six category aggregates (GK, RC, RES, NLU, MATH, TABLE).',
+        'agg_score_micro': 'Mean of all 12 individual benchmark scores.',
+        'agg_score_GK': 'Average of ARC Easy and MMLU Redux.',
+        'agg_score_RC': 'Average of SQuAD v2 and DROP.',
+        'agg_score_RES': 'Average of OpenBookQA and XCSQA.',
+        'agg_score_NLU': 'Average of WinoGrande, PIQA, and HellaSwag.',
+        'agg_score_MATH': 'Based on GSM8K alone.',
+        'agg_score_TABLE': 'Average of WikiTableQ and TriviaQA.',
+        'arc_cf:easy': 'Grade-school multiple-choice science questions testing knowledge and reasoning (AI2 Reasoning Challenge).',
+        'mmlu_redux_cf:_average': 'Re-annotated multitask benchmark covering 57 subjects from STEM to humanities (MMLU Redux).',
+        'squad_v2': 'Extractive reading comprehension on Wikipedia passages, including unanswerable questions (Stanford QA Dataset v2).',
+        'drop': 'Reading comprehension requiring discrete reasoning: counting, sorting, and arithmetic over paragraphs.',
+        'openbookqa_cf': 'Elementary science questions requiring multi-step reasoning beyond provided facts (OpenBookQA).',
+        'xcsqa_cf': 'Cross-lingual commonsense QA testing general world knowledge across 16 languages (X-CSQA).',
+        'winogrande_cf': 'Pronoun resolution problems testing commonsense reasoning, adversarially filtered to remove biases.',
+        'piqa_cf': 'Physical intuition QA: choosing the most plausible solution to everyday physical tasks (PIQA).',
+        'hellaswag_cf': 'Sentence completion testing commonsense inference, with adversarially crafted wrong endings (HellaSwag).',
+        'gsm8k': 'Grade-school math word problems requiring 2–8 steps of arithmetic reasoning (GSM8K).',
+        'wikitablequestions': 'Complex questions over Wikipedia tables requiring multi-step reasoning and aggregation.',
+        'treb_qa': 'Large-scale trivia QA requiring cross-sentence reasoning over evidence documents (TriviaQA).',
+      };
+
+      // Predictors: output, input, delta, improvement for each group, plus content-based
+      // diversity metrics computed on a 1000-output sample of each rephrased dataset.
+      const PREDICTORS = [
+        { key: 'output_dclm_score', label: 'Output DCLM', group: 'DCLM',
+          desc: 'Mean DCLM quality score of the rephrased (output) documents.' },
+        { key: 'input_dclm_score', label: 'Input DCLM', group: 'DCLM',
+          desc: 'Mean DCLM quality score of the original (input) documents before rephrasing.' },
+        { key: 'dclm_score_difference', label: 'DCLM Δ', group: 'DCLM',
+          desc: 'Absolute change in DCLM score: output minus input. Positive means the rephrasing increased perceived quality.' },
+        { key: 'dclm_score_improvement', label: 'DCLM Improvement %', group: 'DCLM',
+          desc: 'Relative improvement in DCLM score: (output − input) / input. Measures the proportional quality gain from rephrasing.' },
+        { key: 'output_edu_score', label: 'Output Edu', group: 'EDU',
+          desc: 'Mean FineWeb-Edu score of the rephrased (output) documents.' },
+        { key: 'input_edu_score', label: 'Input Edu', group: 'EDU',
+          desc: 'Mean FineWeb-Edu score of the original (input) documents before rephrasing.' },
+        { key: 'edu_score_difference', label: 'Edu Δ', group: 'EDU',
+          desc: 'Absolute change in Edu score: output minus input. Positive means the rephrasing increased educational value.' },
+        { key: 'edu_score_improvement', label: 'Edu Improvement %', group: 'EDU',
+          desc: 'Relative improvement in Edu score: (output − input) / input. Measures the proportional educational quality gain from rephrasing.' },
+        { key: 'vendi_score', label: 'Vendi Score', group: 'DIVERSITY',
+          desc: 'Vendi Score: effective number of distinct samples in 1000 outputs, computed via exp(entropy of eigenvalues) of the cosine-similarity matrix of bge-base-en-v1.5 sentence embeddings. Higher = more semantically diverse.' },
+        { key: 'mean_intra_cos_sim', label: 'Mean cos sim', group: 'DIVERSITY',
+          desc: 'Mean pairwise cosine similarity between sentence embeddings of 1000 outputs from each dataset. Lower = more diverse.' },
+        { key: 'near_dup_rate', label: 'Near-dup rate', group: 'DIVERSITY',
+          desc: 'Fraction of output pairs with cosine similarity ≥ 0.95 (near-duplicates), out of all C(1000, 2) pairs.' },
+        { key: 'g_vendi_score', label: 'G-Vendi Score', group: 'DIVERSITY',
+          desc: 'Gradient-space Vendi Score (Prismatic Synthesis, NVIDIA 2025): proxy LLM (Qwen3-0.6B) backprops the autoregressive CE loss for each output; we sketch the resulting gradient via 1024 random index samples from the last MLP down_proj layer, L2-normalise, and take the Vendi Score over the resulting feature set. Predicts generalization more reliably than semantic diversity.' },
+      ];
+
+      // Targets: grouped so each agg is immediately left of its individual benchmarks
+      // Each group: { agg, individuals[] }
+      const GROUPS = [
+        {
+          name: 'Overall',
+          targets: [
+            { key: 'agg_score_macro', label: 'Macro Avg', isAgg: true },
+            { key: 'agg_score_micro', label: 'Micro Avg', isAgg: true },
+          ]
+        },
+        {
+          name: 'General Knowledge',
+          targets: [
+            { key: 'agg_score_GK', label: 'GK Agg', isAgg: true },
+            { key: 'arc_cf:easy', label: 'ARC Easy', isAgg: false },
+            { key: 'mmlu_redux_cf:_average', label: 'MMLU Redux', isAgg: false },
+          ]
+        },
+        {
+          name: 'Reading Comp.',
+          targets: [
+            { key: 'agg_score_RC', label: 'RC Agg', isAgg: true },
+            { key: 'squad_v2', label: 'SQuAD v2', isAgg: false },
+            { key: 'drop', label: 'DROP', isAgg: false },
+          ]
+        },
+        {
+          name: 'Reasoning',
+          targets: [
+            { key: 'agg_score_RES', label: 'RES Agg', isAgg: true },
+            { key: 'openbookqa_cf', label: 'OpenBookQA', isAgg: false },
+            { key: 'xcsqa_cf', label: 'XCSQA', isAgg: false },
+          ]
+        },
+        {
+          name: 'NLU',
+          targets: [
+            { key: 'agg_score_NLU', label: 'NLU Agg', isAgg: true },
+            { key: 'winogrande_cf', label: 'WinoGrande', isAgg: false },
+            { key: 'piqa_cf', label: 'PIQA', isAgg: false },
+            { key: 'hellaswag_cf', label: 'HellaSwag', isAgg: false },
+          ]
+        },
+        {
+          name: 'Math',
+          targets: [
+            { key: 'agg_score_MATH', label: 'Math Agg', isAgg: true },
+            { key: 'gsm8k', label: 'GSM8K', isAgg: false },
+          ]
+        },
+        {
+          name: 'Table',
+          targets: [
+            { key: 'agg_score_TABLE', label: 'Table Agg', isAgg: true },
+            { key: 'wikitablequestions', label: 'WikiTableQ', isAgg: false },
+            { key: 'treb_qa', label: 'TriviaQA', isAgg: false },
+          ]
+        },
+      ];
+
+      // Flatten targets in display order
+      const ALL_TARGETS = GROUPS.flatMap(g => g.targets);
+      // Group boundaries among the predictor rows: list of (group_name, start_index, count)
+      // computed by walking PREDICTORS in order. This supports any number of groups.
+      const PRED_GROUPS = (() => {
+        const out = [];
+        PREDICTORS.forEach((p, i) => {
+          const last = out[out.length - 1];
+          if (last && last.name === p.group) last.count++;
+          else out.push({ name: p.group, start: i, count: 1 });
+        });
+        return out;
+      })();
+
+      // These early runs have incorrect input quality scores (pipeline bug)
+      const BROKEN_INPUT_SCORES = new Set([
+        'format/article-1b-hq', 'format/commentary-1b-hq',
+        'format/discussion-1b-hq', 'format/tutorial-1b-hq',
+        'format/tutorial-12b-hq',
+        'format/faq-1b-lq', 'format/faq-12b-lq'
+      ]);
+      const cleanData = rawData.filter(d => !BROKEN_INPUT_SCORES.has(d.run));
+
+      // Compute correlation matrix
+      const matrix = [];
+      for (const pred of PREDICTORS) {
+        for (const tgt of ALL_TARGETS) {
+          const pairs = cleanData
+            .filter(d => d[pred.key] != null && d.results[tgt.key] != null)
+            .map(d => [d[pred.key], d.results[tgt.key]]);
+          const { r, p } = spearman(pairs.map(p => p[0]), pairs.map(p => p[1]));
+          matrix.push({
+            predictor: pred.key, predictorLabel: pred.label,
+            target: tgt.key, targetLabel: tgt.label,
+            isAgg: tgt.isAgg,
+            desc: BENCH_DESC[tgt.key] || '',
+            r, p, n: pairs.length,
+          });
+        }
+      }
+
+      // Build the heatmap
+      container.style.position = 'relative';
+
+      const tip = document.createElement('div');
+      tip.className = 'd3-tooltip';
+      container.appendChild(tip);
+
+      const svg = d3.select(container).append('svg')
+        .attr('width', '100%')
+        .style('display', 'block');
+
+      const render = () => {
+        const width = container.clientWidth || 900;
+        const isMobile = width < 640;
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        const divColor = isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.18)';
+        const textCol = isDark ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.7)';
+        const mutedCol = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)';
+
+        const predLabels = PREDICTORS.map(p => p.label);
+
+        // Layout
+        const leftMargin = isMobile ? 126 : 140;
+        const topMargin = isMobile ? 90 : 130; // extra room for two-tier header on desktop
+        const rightMargin = isMobile ? 8 : 10;
+        const bottomMargin = 10;
+        const plotW = Math.max(220, width - leftMargin - rightMargin);
+        const cellW = plotW / ALL_TARGETS.length;
+        const cellH = isMobile ? 26 : Math.max(28, Math.min(42, cellW * 0.82));
+        const rowGap = isMobile ? 6 : 8; // gap inserted between predictor groups
+        const numGaps = PRED_GROUPS.length - 1;
+        const plotH = cellH * predLabels.length + rowGap * numGaps;
+        const totalW = leftMargin + plotW + rightMargin;
+        const totalH = topMargin + plotH + bottomMargin;
+
+        svg.attr('width', totalW).attr('height', totalH);
+        svg.selectAll('*').remove();
+
+        // Color scale: diverging, reversed so positive = blue
+        // Custom interpolator that fades to transparent at the midpoint
+        // so near-zero cells blend with the page background in both modes
+        const baseScale = d3.scaleDiverging()
+          .domain([-0.85, 0, 0.85])
+          .interpolator(d3.interpolateRdBu)
+          .clamp(true);
+        const cellColor = (r) => {
+          const c = d3.color(baseScale(-r));
+          const t = Math.abs(r) / 0.85;
+          const alpha = Math.max(0.12, Math.min(1, t * 1.8));
+          return `rgba(${c.r},${c.g},${c.b},${alpha})`;
+        };
+
+        const g = svg.append('g').attr('transform', `translate(${leftMargin},${topMargin})`);
+
+        // --- Group dividers (vertical) and header labels ---
+        let colOffset = 0;
+        const groupHeaderY = 18; // top-level group name
+
+        GROUPS.forEach((grp, gi) => {
+          const groupStartX = colOffset * cellW;
+          const groupW = grp.targets.length * cellW;
+
+          // Vertical divider before each group (except first)
+          if (gi > 0) {
+            g.append('line')
+              .attr('x1', groupStartX).attr('x2', groupStartX)
+              .attr('y1', -4).attr('y2', plotH + 2)
+              .attr('stroke', divColor)
+              .attr('stroke-width', gi === 1 ? 1.5 : 1)
+              .attr('stroke-dasharray', gi === 1 ? 'none' : '4,3');
+          }
+
+          if (!isMobile) {
+            // Group header label (top tier)
+            svg.append('text')
+              .attr('x', leftMargin + groupStartX + groupW / 2)
+              .attr('y', groupHeaderY)
+              .attr('text-anchor', 'middle')
+              .attr('font-size', '9.5px')
+              .attr('font-weight', '700')
+              .attr('letter-spacing', '0.5px')
+              .attr('fill', mutedCol)
+              .text(grp.name.toUpperCase());
+
+            // Bracket line under group header
+            const bracketY = groupHeaderY + 8;
+            svg.append('line')
+              .attr('x1', leftMargin + groupStartX + 4)
+              .attr('x2', leftMargin + groupStartX + groupW - 4)
+              .attr('y1', bracketY).attr('y2', bracketY)
+              .attr('stroke', mutedCol)
+              .attr('stroke-width', 0.8);
+          }
+
+          colOffset += grp.targets.length;
+        });
+
+        // Helper: y position for a predictor row, inserting a gap before each new group.
+        const rowY = (row) => {
+          // Count how many group boundaries have been crossed at this row.
+          const gapsBeforeRow = PRED_GROUPS.filter(gp => gp.start > 0 && gp.start <= row).length;
+          return row * cellH + gapsBeforeRow * rowGap;
+        };
+
+        // --- Horizontal divider between each pair of adjacent predictor groups ---
+        PRED_GROUPS.slice(1).forEach((gp) => {
+          const divY = gp.start * cellH + (PRED_GROUPS.filter(x => x.start > 0 && x.start <= gp.start - 1).length) * rowGap + rowGap / 2;
+          g.append('line')
+            .attr('x1', -2).attr('x2', plotW + 2)
+            .attr('y1', divY).attr('y2', divY)
+            .attr('stroke', isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.35)')
+            .attr('stroke-width', 2.5);
+        });
+
+        // --- Draw cells ---
+        const cells = g.selectAll('g.cell')
+          .data(matrix)
+          .join('g')
+          .attr('class', 'cell')
+          .attr('transform', d => {
+            const col = ALL_TARGETS.findIndex(t => t.key === d.target);
+            const row = PREDICTORS.findIndex(p => p.key === d.predictor);
+            return `translate(${col * cellW},${rowY(row)})`;
+          });
+
+        cells.append('rect')
+          .attr('width', cellW - 1)
+          .attr('height', cellH - 1)
+          .attr('rx', 3)
+          .attr('fill', d => cellColor(d.r))
+          .attr('stroke', isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)')
+          .attr('stroke-width', 0.5);
+
+        const textFill = (r) => Math.abs(r) > 0.45 ? '#fff' : textCol;
+
+        cells.append('text')
+          .attr('x', (cellW - 1) / 2)
+          .attr('y', (cellH - 1) / 2)
+          .attr('text-anchor', 'middle')
+          .attr('dominant-baseline', 'central')
+          .attr('font-size', Math.max(isMobile ? 7.5 : 9, Math.min(isMobile ? 10 : 12, cellW * 0.25)) + 'px')
+          .attr('font-weight', d => Math.abs(d.r) > 0.4 ? '700' : '500')
+          .attr('fill', d => textFill(d.r))
+          .text(d => d.r.toFixed(2));
+
+        // Significance markers
+        cells.append('text')
+          .attr('x', cellW - 2).attr('y', isMobile ? 8 : 10)
+          .attr('text-anchor', 'end')
+          .attr('font-size', isMobile ? '8px' : '11px')
+          .attr('font-weight', '700')
+          .attr('fill', d => Math.abs(d.r) > 0.45 ? 'rgba(255,255,255,0.8)' : mutedCol)
+          .text(d => d.p < 0.001 ? '***' : d.p < 0.01 ? '**' : d.p < 0.05 ? '*' : '');
+
+        // --- Row labels (predictors, with hover descriptions) ---
+        const gLabels = svg.append('g').attr('transform', `translate(${leftMargin - 8},${topMargin})`);
+        PREDICTORS.forEach((pred, i) => {
+          const labelG = gLabels.append('g')
+            .style('cursor', 'help');
+          const labelText = isMobile
+            ? pred.label
+              .replace('Input ', 'In ')
+              .replace('Output ', 'Out ')
+              .replace('Improvement %', 'Δ%')
+            : pred.label;
+
+          labelG.append('text')
+            .attr('x', 0).attr('y', rowY(i) + cellH / 2)
+            .attr('text-anchor', 'end')
+            .attr('dominant-baseline', 'central')
+            .attr('font-size', isMobile ? '10px' : '11px')
+            .attr('fill', textCol)
+            .attr('font-weight', '500')
+            .text(labelText);
+
+          // Hit area
+          labelG.append('rect')
+            .attr('x', -leftMargin + 20).attr('y', rowY(i))
+            .attr('width', leftMargin - 20).attr('height', cellH)
+            .attr('fill', 'transparent');
+
+          labelG.on('mouseenter', function(ev) {
+            tip.innerHTML = `<div style="font-weight:700;font-size:13px;margin-bottom:4px;">${pred.label}</div><div style="font-size:12px;color:var(--muted-color);line-height:1.45;">${pred.desc}</div>`;
+            tip.style.opacity = '1';
+          })
+          .on('mousemove', function(ev) {
+            const [mx, my] = d3.pointer(ev, container);
+            const bw = tip.offsetWidth || 260;
+            const ox = 12;
+            const oy = (my + (tip.offsetHeight || 100) + 20 > totalH) ? -((tip.offsetHeight || 100) + 12) : 14;
+            tip.style.transform = `translate(${Math.round(mx + ox)}px,${Math.round(my + oy)}px)`;
+          })
+          .on('mouseleave', function() {
+            tip.style.opacity = '0';
+            tip.style.transform = 'translate(-9999px,-9999px)';
+          });
+        });
+
+        // --- Column labels (rotated, with hover descriptions) ---
+        const gColLabels = svg.append('g').attr('transform', `translate(${leftMargin},${topMargin - 6})`);
+        ALL_TARGETS.forEach((tgt, i) => {
+          const labelG = gColLabels.append('g')
+            .attr('transform', `translate(${i * cellW + cellW / 2},0)`)
+            .style('cursor', BENCH_DESC[tgt.key] ? 'help' : 'default');
+
+          labelG.append('text')
+            .attr('x', 0).attr('y', 0)
+            .attr('transform', `rotate(${isMobile ? -62 : -55})`)
+            .attr('text-anchor', 'start')
+            .attr('font-size', isMobile ? '8px' : '10px')
+            .attr('fill', textCol)
+            .attr('font-weight', tgt.isAgg ? '700' : '400')
+            .text(tgt.label);
+
+          if (BENCH_DESC[tgt.key]) {
+            // Invisible hit area for easier hovering on rotated text
+            labelG.append('rect')
+              .attr('x', -cellW / 2).attr('y', -80)
+              .attr('width', cellW).attr('height', 80)
+              .attr('fill', 'transparent');
+
+            labelG.on('mouseenter', function(ev) {
+              tip.innerHTML = `<div style="font-weight:700;font-size:13px;margin-bottom:4px;">${tgt.label}</div><div style="font-size:12px;color:var(--muted-color);line-height:1.45;">${BENCH_DESC[tgt.key]}</div>`;
+              tip.style.opacity = '1';
+            })
+            .on('mousemove', function(ev) {
+              const [mx, my] = d3.pointer(ev, container);
+              const bw = tip.offsetWidth || 260;
+              const ox = (mx + bw + 20 > totalW) ? -(bw + 12) : 12;
+              tip.style.transform = `translate(${Math.round(mx + ox)}px,${Math.round(my + 14)}px)`;
+            })
+            .on('mouseleave', function() {
+              tip.style.opacity = '0';
+              tip.style.transform = 'translate(-9999px,-9999px)';
+            });
+          }
+        });
+
+        if (!isMobile) {
+          // --- Predictor group labels (vertical), one per group in PRED_GROUPS ---
+          const groupLabelX = 14;
+
+          const GROUP_DESC = {
+            'DCLM': 'DCLM score rates text quality on a 0–1 scale using a fastText classifier trained to distinguish curated, high-quality web data from random web crawls.',
+            'EDU': 'FineWeb-Edu score rates educational value on a 0–5 scale using a classifier trained on LLM-annotated web pages, where higher scores indicate more instructive content.',
+            'DIVERSITY': 'Diversity metrics computed on a 1000-output sample of each rephrased dataset. Vendi Score, mean cos sim, and near-dup rate use bge-base-en-v1.5 sentence embeddings. G-Vendi uses gradients from a frozen Qwen3-0.6B proxy LLM. Higher Vendi / G-Vendi = more diverse outputs.',
+          };
+          const GROUP_LABEL = {
+            'DCLM': 'DCLM',
+            'EDU': 'EDU',
+            'DIVERSITY': 'Diversity',
+          };
+
+          PRED_GROUPS.forEach(gp => {
+            const firstRow = gp.start;
+            const lastRow = gp.start + gp.count - 1;
+            const cy = topMargin + (rowY(firstRow) + rowY(lastRow) + cellH) / 2;
+            const labelText = GROUP_LABEL[gp.name] || gp.name;
+            const labelG = svg.append('g').style('cursor', 'help');
+
+            labelG.append('text')
+              .attr('x', groupLabelX).attr('y', cy)
+              .attr('text-anchor', 'middle')
+              .attr('dominant-baseline', 'central')
+              .attr('font-size', '9px')
+              .attr('font-weight', '700')
+              .attr('letter-spacing', '1px')
+              .attr('fill', isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.3)')
+              .attr('transform', `rotate(-90, ${groupLabelX}, ${cy})`)
+              .text(labelText);
+
+            // Hit area centered on the rotated text, sized to the group height.
+            const halfH = (gp.count * cellH) / 2;
+            labelG.append('rect')
+              .attr('x', 0).attr('y', cy - halfH)
+              .attr('width', 24).attr('height', halfH * 2)
+              .attr('fill', 'transparent');
+
+            labelG.on('mouseenter', function() {
+              tip.innerHTML = `<div style="font-weight:700;font-size:13px;margin-bottom:4px;">${labelText}</div><div style="font-size:12px;color:var(--muted-color);line-height:1.45;">${GROUP_DESC[gp.name] || ''}</div>`;
+              tip.style.opacity = '1';
+            })
+            .on('mousemove', function(ev) {
+              const [mx, my] = d3.pointer(ev, container);
+              tip.style.transform = `translate(${Math.round(mx + 12)}px,${Math.round(my + 14)}px)`;
+            })
+            .on('mouseleave', function() {
+              tip.style.opacity = '0';
+              tip.style.transform = 'translate(-9999px,-9999px)';
+            });
+          });
+        }
+
+        // --- Tooltip interactions ---
+        cells.on('mouseenter', function(ev, d) {
+          d3.select(this).select('rect')
+            .attr('stroke', isDark ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)')
+            .attr('stroke-width', 2);
+
+          const sig = d.p < 0.001 ? 'p < 0.001 (***)' : d.p < 0.01 ? `p = ${d.p.toFixed(3)} (**)` : d.p < 0.05 ? `p = ${d.p.toFixed(3)} (*)` : `p = ${d.p.toFixed(3)}`;
+          const descHtml = d.desc ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border-color);font-size:11px;color:var(--muted-color);line-height:1.4;">${d.desc}</div>` : '';
+          tip.innerHTML = `
+            <div style="font-weight:700;font-size:13px;margin-bottom:4px;">${d.predictorLabel} → ${d.targetLabel}</div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px;">
+              <span style="color:var(--muted-color);">Spearman ρ</span><span style="font-weight:700;">${d.r.toFixed(4)}</span>
+              <span style="color:var(--muted-color);">Significance</span><span>${sig}</span>
+              <span style="color:var(--muted-color);">N</span><span>${d.n} experiments</span>
+            </div>${descHtml}`;
+          tip.style.opacity = '1';
+        })
+        .on('mousemove', function(ev) {
+          const [mx, my] = d3.pointer(ev, container);
+          const bw = tip.offsetWidth || 260;
+          const bh = tip.offsetHeight || 120;
+          const ox = (mx + bw + 20 > totalW) ? -(bw + 12) : 12;
+          const oy = (my + bh + 20 > totalH) ? -(bh + 12) : 14;
+          tip.style.transform = `translate(${Math.round(mx + ox)}px,${Math.round(my + oy)}px)`;
+        })
+        .on('mouseleave', function() {
+          d3.select(this).select('rect')
+            .attr('stroke', isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)')
+            .attr('stroke-width', 0.5);
+          tip.style.opacity = '0';
+          tip.style.transform = 'translate(-9999px,-9999px)';
+        });
+      };
+
+      render();
+      if (window.ResizeObserver) { new ResizeObserver(() => render()).observe(container); }
+      else { window.addEventListener('resize', render); }
+
+      // Legend
+      const legend = document.createElement('div');
+      legend.className = 'legend';
+      const csBase = d3.scaleDiverging().domain([-0.85, 0, 0.85]).interpolator(d3.interpolateRdBu).clamp(true);
+      const sw = (r) => {
+        const rgb = d3.color(csBase(-r));
+        const t = Math.abs(r) / 0.85;
+        const alpha = Math.max(0.12, Math.min(1, t * 1.8));
+        return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+      };
+      legend.innerHTML = `
+        <div class="legend-title">Legend</div>
+        <div class="items">
+          <span class="item"><span class="swatch" style="background:${sw(-0.6)};"></span><span>ρ = −0.6</span></span>
+          <span class="item"><span class="swatch" style="background:${sw(-0.3)};"></span><span>ρ = −0.3</span></span>
+          <span class="item"><span class="swatch" style="background:${sw(0)};"></span><span>ρ = 0</span></span>
+          <span class="item"><span class="swatch" style="background:${sw(0.3)};"></span><span>ρ = +0.3</span></span>
+          <span class="item"><span class="swatch" style="background:${sw(0.6)};"></span><span>ρ = +0.6</span></span>
+          <span style="display:block;width:100%;margin-top:4px;font-size:11px;color:var(--muted-color);">*** p&lt;0.001 &nbsp; ** p&lt;0.01 &nbsp; * p&lt;0.05</span>
+        </div>`;
+      container.appendChild(legend);
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+  } else { ensureD3(bootstrap); }
+})();
+</script>
