@@ -1,0 +1,1182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GPU Throughput Comparison</title>
+<style>
+  .throughput-compare-viz {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --surface: #f9fafb;
+    --canvas-bg: #fafafa;
+    --canvas-grid: #d8dbe0;
+    --text: #1f2937;
+    --text-strong: #111827;
+    --text-muted: #4b5563;
+    --text-faint: #6b7280;
+    --border: #111827;
+    --brand: #2e5f7e;
+    --brand-b: #7e3d2e;
+    --training: #b45309;
+    --success: #16a34a;
+    --tooltip-bg: #111827;
+    --tooltip-text: #f8fafc;
+    --slider-start: #2e5f7e;
+    --slider-mid: #c0392b;
+    --slider-end: #c4a020;
+    --slider-rest: #d1d5db;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .throughput-compare-viz {
+      --bg: #020617;
+      --surface: #0b1324;
+      --canvas-bg: #f8fafc;
+      --canvas-grid: #d4d7dd;
+      --text: #e2e8f0;
+      --text-strong: #f8fafc;
+      --text-muted: #cbd5e1;
+      --text-faint: #94a3b8;
+      --border: #475569;
+      --brand: #7dd3fc;
+      --brand-b: #fca17d;
+      --training: #f59e0b;
+      --success: #22c55e;
+      --tooltip-bg: #020617;
+      --tooltip-text: #f8fafc;
+      --slider-start: #38bdf8;
+      --slider-mid: #fb7185;
+      --slider-end: #facc15;
+      --slider-rest: #334155;
+    }
+    .throughput-compare-viz .bottom-strip { color: #e2e8f0; }
+    .throughput-compare-viz .bottom-strip .tps { color: #cbd5e1; }
+  }
+
+  .throughput-compare-viz,
+  .throughput-compare-viz * { box-sizing: border-box; }
+  .throughput-compare-viz * { margin: 0; padding: 0; }
+
+  .throughput-compare-viz {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 16px 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, sans-serif;
+  }
+
+  .control-group { display: flex; flex-direction: column; gap: 4px; }
+  .control-group label { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
+  .throughput-compare-viz select {
+    -webkit-appearance: none;
+    appearance: none;
+    color: var(--text-strong);
+    font-size: 15px;
+    font-family: inherit;
+    padding: 7px 28px 7px 10px;
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    background-color: var(--surface);
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+      linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) calc(50% - 2px),
+      calc(100% - 9px) calc(50% - 2px);
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    cursor: pointer;
+  }
+  .canvas-row { display: flex; gap: 8px; align-items: stretch; position: relative; z-index: 1; }
+  .canvas-row .side-panel { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  .canvas-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    border: 2px solid var(--border);
+    background: var(--canvas-bg);
+  }
+  .canvas-stage { position: relative; }
+  .canvas-wrap canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+    border: 0;
+    background: transparent;
+  }
+  .slider-area { position: relative; width: 100%; margin-bottom: 8px; z-index: 9999; }
+  .gpu-label {
+    text-align: center;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--brand);
+    margin-bottom: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .slider-area input[type=range] { position: relative; z-index: 3; width: 100%; margin: 0; display: block; -webkit-appearance: none; appearance: none; height: 8px; border-radius: 4px; outline: none; cursor: pointer; }
+  .slider-area input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--bg); border: 2px solid var(--brand); cursor: pointer; margin-top: -5px; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+  .slider-area input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--bg); border: 2px solid var(--brand); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+
+  .landmark-row { position: relative; width: 100%; height: 16px; }
+  .landmark { position: absolute; transform: translateX(-50%); cursor: pointer; display: flex; flex-direction: column; align-items: center; }
+  .landmark-row.top .landmark { bottom: 0; }
+  .landmark-row.bottom .landmark { top: 0; }
+  .landmark .tick { width: 2px; height: 5px; flex-shrink: 0; }
+  .landmark .name { font-size: 10px; font-weight: 700; white-space: nowrap; letter-spacing: 0.2px; line-height: 1.15; }
+  .landmark:hover .name { color: var(--text-strong) !important; }
+
+  .landmark-row.top .tick { background: var(--training); }
+  .landmark-row.top .name { color: var(--training); }
+  .landmark-row.bottom .tick { background: var(--brand); }
+  .landmark-row.bottom .name { color: var(--brand); }
+  .landmark .tooltip { display: none; position: absolute; left: 50%; transform: translateX(-50%); background: var(--tooltip-bg); color: var(--tooltip-text); font-size: 12px; padding: 10px 14px; border-radius: 8px; width: min(300px, calc(100vw - 32px)); white-space: normal; z-index: 2147483647; pointer-events: none; line-height: 1.45; text-align: left; box-shadow: 0 12px 30px rgba(0,0,0,0.35); }
+  .landmark-row.top .tooltip { top: calc(100% + 4px); }
+  .landmark-row.bottom .tooltip { top: calc(100% + 4px); }
+  .landmark .tooltip::after { content: ''; position: absolute; left: 50%; transform: translateX(-50%); border: 5px solid transparent; }
+  .landmark .tooltip.tip-right::after { left: auto; right: 16px; transform: none; }
+  .landmark .tooltip.tip-left::after { left: 16px; transform: none; }
+  .landmark-row.top .tooltip::after { bottom: 100%; border-bottom-color: var(--tooltip-bg); }
+  .landmark-row.bottom .tooltip::after { bottom: 100%; border-bottom-color: var(--tooltip-bg); }
+  .landmark-row:has(.landmark:hover) { z-index: 99999; position: relative; }
+  .landmark:hover .tooltip { display: block; }
+
+  .bottom-strip {
+    position: absolute;
+    bottom: 4px;
+    left: 10px;
+    right: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    color: #1f2937;
+    pointer-events: none;
+    z-index: 4;
+  }
+  .throughput-strip {
+    padding: 0;
+    text-align: center;
+  }
+  .throughput-strip .tps {
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .output-panel {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    text-align: center;
+  }
+  .output-heading {
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 700;
+    font-size: 10px;
+  }
+  .output-num {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-size: 11px;
+  }
+  .output-unit {
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .output-unit-emoji {
+    font-size: 13px;
+    line-height: 1;
+  }
+
+  .instance-a .output-num,
+  .instance-a .canvas-wrap { border-color: var(--brand); }
+  .instance-a .output-num { color: var(--brand); }
+  .instance-a .output-unit { color: var(--text-muted); }
+  .instance-a select { border-color: var(--brand); }
+
+  .instance-b .output-num,
+  .instance-b .canvas-wrap { border-color: var(--brand-b); }
+  .instance-b .output-num { color: var(--brand-b); }
+  .instance-b .output-unit { color: var(--text-muted); }
+  .instance-b select { border-color: var(--brand-b); }
+
+  .mode-single .instance-b,
+  .mode-single .speedup-badge { display: none; }
+
+  .mode-single .instance-a .instance-label { display: none; }
+  .mode-single .instance-a .control-group label { display: block; }
+  .mode-single .instance-a .canvas-wrap { border-color: var(--border); }
+  .mode-single .instance-a select { border-color: var(--border); }
+
+  .mode-compare .instance-a .control-group label,
+  .mode-compare .instance-b .control-group label { display: none; }
+
+  .instance-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 2px;
+  }
+  .instance-a .instance-label { color: var(--brand); }
+  .instance-b .instance-label { color: var(--brand-b); }
+
+  .speedup-badge {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 6px 0;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .speedup-badge .ratio { font-size: 16px; }
+  .speedup-badge .ratio.a-faster { color: var(--brand); }
+  .speedup-badge .ratio.b-faster { color: var(--brand-b); }
+
+  .datasets { min-width: 180px; display: flex; flex-direction: column; justify-content: center; }
+  .datasets-title { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; white-space: nowrap; }
+  .dataset-bars { display: flex; flex-direction: column; gap: 4px; }
+  .dataset-item { display: flex; align-items: center; gap: 5px; font-size: 12px; position: relative; cursor: pointer; }
+  .dataset-item .ds-check { font-size: 15px; width: 18px; text-align: center; }
+  .dataset-item .ds-name { font-weight: 600; color: var(--text-strong); }
+  .dataset-item .ds-time { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .dataset-item .ds-size { color: var(--text-faint); font-size: 11px; }
+  .dataset-item.done .ds-name { color: var(--success); }
+  .dataset-item.done .ds-time { color: var(--success); }
+  .dataset-item .ds-tip { display: none; position: absolute; top: calc(100% + 6px); left: 0; background: var(--tooltip-bg); color: var(--tooltip-text); font-size: 12px; padding: 10px 14px; border-radius: 8px; width: min(260px, calc(100vw - 32px)); white-space: normal; z-index: 2147483647; pointer-events: none; line-height: 1.45; text-align: left; box-shadow: 0 12px 30px rgba(0,0,0,0.35); }
+  .dataset-item .ds-tip::after { content: ''; position: absolute; bottom: 100%; left: 20px; border: 5px solid transparent; border-bottom-color: var(--tooltip-bg); }
+  .dataset-item:hover { z-index: 99999; }
+  .dataset-item:hover .ds-tip { display: block; }
+
+  .instance-a .ds-time { color: var(--brand); }
+  .instance-b .ds-time { color: var(--brand-b); }
+
+  @media (max-width: 980px) {
+    .throughput-compare-viz .canvas-row { flex-direction: column; }
+    .throughput-compare-viz .canvas-row .side-panel { align-items: flex-start; }
+    .throughput-compare-viz .landmark .name { font-size: 9px; }
+    .throughput-compare-viz .bottom-strip {
+      left: 6px;
+      right: 6px;
+      font-size: 10px;
+    }
+    .throughput-compare-viz .output-num { font-size: 10px; }
+    .throughput-compare-viz .output-unit { font-size: 10px; }
+    .throughput-compare-viz .output-unit-emoji { font-size: 12px; }
+    .throughput-compare-viz .output-heading { font-size: 9px; }
+    .throughput-compare-viz .datasets { max-width: 100%; min-width: 0; }
+    .throughput-compare-viz .dataset-bars { flex-direction: row; flex-wrap: wrap; gap: 4px 12px; }
+    .throughput-compare-viz .dataset-item { font-size: 12px; }
+  }
+
+  @media (max-width: 640px) {
+    .throughput-compare-viz { overflow-x: hidden; }
+    .throughput-compare-viz .slider-area { margin-bottom: 10px; }
+    .throughput-compare-viz .datasets-title {
+      white-space: nowrap;
+      font-size: 9px;
+      letter-spacing: 0.35px;
+    }
+    .throughput-compare-viz .landmark .tick { height: 6px; }
+    .throughput-compare-viz .canvas-row .side-panel { width: 100%; }
+    .throughput-compare-viz .control-group { width: 100%; }
+    .throughput-compare-viz select { width: 100%; }
+    .throughput-compare-viz .landmark .name {
+      max-width: 68px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 8px;
+    }
+    .throughput-compare-viz .bottom-strip {
+      position: absolute;
+      bottom: 4px;
+      left: 6px;
+      right: 6px;
+      margin-top: 0;
+      padding: 0;
+      justify-content: space-between;
+      flex-wrap: nowrap;
+      gap: 8px;
+    }
+    .throughput-compare-viz .throughput-strip {
+      flex: 1 1 auto;
+      text-align: left;
+      white-space: nowrap;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding-right: 8px;
+    }
+    .throughput-compare-viz .output-panel {
+      flex: 0 0 auto;
+      justify-content: flex-end;
+      white-space: nowrap;
+      min-width: 0;
+      gap: 4px;
+    }
+    .throughput-compare-viz .output-heading { font-size: 8px; }
+    .throughput-compare-viz .output-num,
+    .throughput-compare-viz .output-unit { font-size: 9px; }
+    .throughput-compare-viz .output-unit-emoji { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<div class="viz throughput-compare-viz">
+  <div class="slider-area">
+    <div class="gpu-label" data-role="gpuLabel">1 GPU</div>
+    <div class="landmark-row top" data-role="row-a2"></div>
+    <div class="landmark-row top" data-role="row-a1"></div>
+    <input type="range" data-role="gpus" min="0" max="1" step="0.001" value="0">
+    <div class="landmark-row bottom" data-role="row-b1"></div>
+    <div class="landmark-row bottom" data-role="row-b2"></div>
+  </div>
+
+  <div class="instance-a">
+    <div class="canvas-row">
+      <div class="side-panel">
+        <div class="instance-label">Model A</div>
+        <div class="control-group">
+          <label data-role="modelLabelA">Model</label>
+          <select data-role="modelA">
+            <option value="45540">SmolLM2-135M</option>
+            <option value="8086">Qwen3-4B</option>
+            <option value="6443">Qwen3-8B</option>
+            <option value="6117">GPT-OSS-120B</option>
+            <option value="1724">Gemma-3-27B</option>
+          </select>
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <div class="canvas-stage">
+          <canvas data-role="cA"></canvas>
+        </div>
+        <div class="bottom-strip">
+          <div class="throughput-strip">
+            <span data-role="booksRateA">0 pages/sec</span>
+            <span class="tps" data-role="tpsInlineA">(0 TPS)</span>
+          </div>
+          <div class="output-panel">
+            <span class="output-heading">Generated</span>
+            <span class="output-num" data-role="totalTokensNumA">0</span>
+            <span class="output-unit output-unit-text">toks</span>
+            <span class="output-num" data-role="totalItemNumA">0</span>
+            <span class="output-unit output-unit-emoji" data-role="totalItemUnitA">📄</span>
+          </div>
+        </div>
+      </div>
+      <div class="datasets">
+        <div class="datasets-title" data-role="datasetsTitleA">Time to generate dataset</div>
+        <div class="dataset-bars" data-role="datasetBarsA"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="speedup-badge" data-role="speedupBadge">
+    <span class="ratio" data-role="speedupRatio">—</span>
+  </div>
+
+  <div class="instance-b">
+    <div class="canvas-row">
+      <div class="side-panel">
+        <div class="instance-label">Model B</div>
+        <div class="control-group">
+          <label data-role="modelLabelB">Model</label>
+          <select data-role="modelB">
+            <option value="45540">SmolLM2-135M</option>
+            <option value="8086">Qwen3-4B</option>
+            <option value="6443">Qwen3-8B</option>
+            <option value="6117">GPT-OSS-120B</option>
+            <option value="1724">Gemma-3-27B</option>
+          </select>
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <div class="canvas-stage">
+          <canvas data-role="cB"></canvas>
+        </div>
+        <div class="bottom-strip">
+          <div class="throughput-strip">
+            <span data-role="booksRateB">0 pages/sec</span>
+            <span class="tps" data-role="tpsInlineB">(0 TPS)</span>
+          </div>
+          <div class="output-panel">
+            <span class="output-heading">Generated</span>
+            <span class="output-num" data-role="totalTokensNumB">0</span>
+            <span class="output-unit output-unit-text">toks</span>
+            <span class="output-num" data-role="totalItemNumB">0</span>
+            <span class="output-unit output-unit-emoji" data-role="totalItemUnitB">📄</span>
+          </div>
+        </div>
+      </div>
+      <div class="datasets">
+        <div class="datasets-title" data-role="datasetsTitleB">Time to generate dataset</div>
+        <div class="dataset-bars" data-role="datasetBarsB"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const allViz = document.querySelectorAll('.viz:not([data-init])');
+  const root = allViz[allViz.length - 1];
+  if (!root) return;
+  root.setAttribute('data-init', '1');
+  const $ = (role) => root.querySelector('[data-role="' + role + '"]');
+
+  function readEmbedConfig() {
+    let mountEl = root;
+    while (mountEl && !mountEl.getAttribute?.('data-config')) {
+      mountEl = mountEl.parentElement;
+    }
+    let cfg = {};
+    try {
+      const rawConfig = mountEl && mountEl.getAttribute ? mountEl.getAttribute('data-config') : null;
+      if (rawConfig) cfg = JSON.parse(rawConfig);
+    } catch (error) {
+      console.error('Error parsing embed config:', error);
+    }
+    if (Object.keys(cfg).length === 0) {
+      try {
+        const urlParams = new URLSearchParams(window.location.hash ? window.location.hash.substring(1) : window.location.search);
+        const configParam = urlParams.get('config');
+        if (configParam) cfg = JSON.parse(decodeURIComponent(configParam));
+      } catch (_) {}
+    }
+    return cfg;
+  }
+
+  const embedConfig = readEmbedConfig();
+  const isCompareMode = Number(embedConfig.modelCount) === 2;
+  const defaultModelA = String(embedConfig.modelA || (isCompareMode ? 6443 : 45540));
+  const defaultModelB = String(embedConfig.modelB || 1724);
+  root.classList.add(isCompareMode ? 'mode-compare' : 'mode-single');
+
+  const TOKENS_PER_PAGE = 500;
+  const PAGES_PER_BOOK = 500;
+  const BOOKS_PER_SHELF = 500;
+  const TOKENS_PER_BOOK = TOKENS_PER_PAGE * PAGES_PER_BOOK;
+  const TOKENS_PER_SHELF = TOKENS_PER_BOOK * BOOKS_PER_SHELF;
+  const GPUS_PER_NODE = 8;
+  const GPUS_PER_RACK = 32;
+  const GPUS_PER_SUPERPOD = 256;
+
+  const MIN_GPUS = 1, MAX_GPUS = 1_000_000;
+  const LOG_MIN = Math.log(MIN_GPUS), LOG_MAX = Math.log(MAX_GPUS);
+
+  const TRAINING_RUNS = [
+    { gpus: 8,       name: 'BERT',       row: 'a1',
+      desc: '<b>BERT</b> (Google, 2018)<br>16 TPU v3 chips. 340M params.<br>Trained on BooksCorpus + Wikipedia. Introduced masked language modeling. Changed NLP forever.' },
+    { gpus: 32,      name: 'GPT-2',      row: 'a1',
+      desc: '<b>GPT-2</b> (OpenAI, 2019)<br>\u224832 V100 GPUs. 1.5B params.<br>"Too dangerous to release." Trained on 40 GB of internet text (WebText). Showed scaling up autoregressive LMs produces strong zero-shot results.' },
+    { gpus: 384,     name: 'BLOOM',      row: 'a1',
+      desc: '<b>BLOOM</b> (BigScience, 2022)<br>384 A100 80GB GPUs on Jean Zay (48 nodes). 176B params.<br>One of the first major open large-model training runs.' },
+    { gpus: 2_048,   name: 'Llama 1',    row: 'a2',
+      desc: '<b>Llama 1</b> (Meta, 2023)<br>2,048 A100 GPUs. 65B params.<br>Trained on 1.4T tokens of public data only. Llama-13B outperformed GPT-3 (175B). Open-sourced and ignited the open LLM movement.' },
+    { gpus: 2_788,   name: 'DeepSeek',   row: 'a1',
+      desc: '<b>DeepSeek V3</b> (DeepSeek, 2024)<br>2,048 H800 GPUs. 671B MoE params (37B active).<br>Only 2.8M GPU-hours using FP8 mixed precision. One of the most cost-efficient frontier model training runs ever (\u2248$5.6M).' },
+    { gpus: 10_000,  name: 'GPT-3',      row: 'a1',
+      desc: '<b>GPT-3</b> (OpenAI, 2020)<br>10,000 V100 GPUs. 175B params.<br>Trained on 300B tokens. Demonstrated few-shot learning. Sparked the LLM revolution. Training cost estimated at $4.6M.' },
+    { gpus: 16_384,  name: 'Llama 3',    row: 'a2',
+      desc: '<b>Llama 3</b> (Meta, 2024)<br>16,384 H100 GPUs. 405B params.<br>Trained on 15T tokens. Meta\u2019s largest open model. Used two 24K-GPU clusters with custom Tectonic filesystem for checkpointing.' },
+    { gpus: 25_000,  name: 'GPT-4',      row: 'a1',
+      desc: '<b>GPT-4</b> (OpenAI, 2023, estimated)<br>\u224825K A100 GPUs. \u22481.8T MoE params.<br>Trained on \u224813T tokens over \u2248100 days. Estimated cost $63M. First GPT model to use mixture-of-experts (16 experts).' },
+    { gpus: 50_000,  name: 'GPT-5',      row: 'a1',
+      desc: '<b>GPT-5</b> (OpenAI, 2025, estimated)<br>\u224850K H100-equiv GPUs (est.).<br>Used less training compute than GPT-4.5 due to focus on post-training scaling. Trained on Stargate infrastructure.' },
+  ];
+
+  const INFRA_LANDMARKS = [
+    { gpus: 1,       name: '1 GPU',       row: 'b1',
+      desc: '<b>NVIDIA H100 SXM</b><br>80 GB HBM3, 3.96 PFLOPS FP8.<br>The workhorse of modern AI training and inference.' },
+    { gpus: 8,       name: '1 node',      row: 'b1',
+      desc: '<b>DGX H100</b> \u2014 8\u00d7H100 SXM<br>640 GB HBM3, NVLink 900 GB/s, 32 PFLOPS FP8.<br>NVIDIA\u2019s flagship AI server, fits in a single 10U chassis.' },
+    { gpus: 32,      name: '1 rack',      row: 'b1',
+      desc: '<b>DGX SuperPOD rack</b> \u2014 4\u00d7DGX H100<br>32 GPUs, 2.5 TB HBM3, 40+ kW per rack.<br>The building block of enterprise AI clusters.' },
+    { gpus: 256,     name: 'SuperPOD',    row: 'b1',
+      desc: '<b>DGX SuperPOD (1 SU)</b> \u2014 32 nodes, 256 GPUs<br>NDR400 InfiniBand, 256 PFLOPS FP8.<br>NVIDIA\u2019s reference architecture for large-scale AI.' },
+    { gpus: 10_752,  name: 'ALPS',        row: 'b1',
+      desc: '<b>ALPS</b> \u2014 CSCS, Lugano, Switzerland<br>10,752 GH200 Grace-Hopper superchips, 270 PFLOPS.<br>#7 on TOP500. Used by Swiss AI Initiative to pre-train 70B-parameter LLMs.' },
+    { gpus: 12_288,  name: 'ByteDance',   row: 'b2',
+      desc: '<b>ByteDance MegaScale</b><br>12,288 GPUs (A100/H800 mix).<br>Trained a 175B model at 55.2% MFU (1.34\u00d7 Megatron-LM). Published at NSDI \u201924. Full-stack optimization for 10K+ GPU training.' },
+    { gpus: 64_000,  name: 'Stargate',    row: 'b1',
+      desc: '<b>Stargate</b> \u2014 OpenAI / Oracle, Abilene, TX<br>64K GB200 GPUs (planned end 2026), 1.2 GW.<br>$500B joint venture (OpenAI, Oracle, SoftBank, MGX). 875-acre campus, 8 AI factory buildings.' },
+    { gpus: 100_000, name: 'Tencent',     row: 'b2',
+      desc: '<b>Tencent Xingmai 2.0</b><br>100K GPUs (H800/A800 mix) in a single cluster.<br>60% comms efficiency gain over v1. 3.2 TB/s inter-server bandwidth. Supports training and fine-tuning at scale.' },
+    { gpus: 200_000, name: 'Colossus',    row: 'b1',
+      desc: '<b>Colossus</b> \u2014 xAI, Memphis, TN<br>200K H100/H200 GPUs, 250 MW.<br>Built in 122 days (vs 18\u201324 months typical). Powered by 35 gas turbines + 208 Tesla Megapacks.' },
+    { gpus: 250_000, name: 'CoreWeave',   row: 'b2',
+      desc: '<b>CoreWeave</b> \u2014 250K+ GPUs across 32 data centers<br>Mix of H100, H200, GB200, GB300.<br>Largest GPU-native cloud. IPO\u2019d 2025. Clients: OpenAI, Microsoft, Meta.' },
+    { gpus: 600_000, name: 'Meta',        row: 'b2',
+      desc: '<b>Meta AI fleet</b> \u2014 600K H100-equivalent GPUs<br>\u2248350K H100 + A100s. $12B+ GPU investment.<br>Organized into 24K-GPU clusters (RoCE + InfiniBand). Trained Llama 3 405B.' },
+    { gpus: 1_000_000, name: 'Colossus 2', row: 'b1',
+      desc: '<b>Colossus 2</b> \u2014 xAI (planned)<br>1M+ H100-equivalent GPUs, 2 GW power.<br>$20B Series E from NVIDIA, Cisco, and others. Expanding across Memphis-area facilities.' },
+  ];
+
+  function gpusToSlider(gpus) { return (Math.log(Math.max(gpus, 1)) - LOG_MIN) / (LOG_MAX - LOG_MIN); }
+  function sliderToGpus(val) { return Math.round(Math.exp(LOG_MIN + val * (LOG_MAX - LOG_MIN))); }
+
+  const gpuSlider = $('gpus');
+  const gpuLabelEl = $('gpuLabel');
+  const speedupRatioEl = $('speedupRatio');
+  const modelASelect = $('modelA');
+  const modelBSelect = $('modelB');
+  const datasetsTitleAEl = $('datasetsTitleA');
+  const datasetsTitleBEl = $('datasetsTitleB');
+  const booksRateAEl = $('booksRateA');
+  const booksRateBEl = $('booksRateB');
+
+  function applyModelDefault(selectEl, modelValue) {
+    const hasOption = Array.from(selectEl.options).some((option) => option.value === modelValue);
+    if (hasOption) {
+      selectEl.value = modelValue;
+    }
+  }
+
+  applyModelDefault(modelASelect, defaultModelA);
+  applyModelDefault(modelBSelect, defaultModelB);
+
+  datasetsTitleAEl.textContent = 'Time to generate dataset';
+  datasetsTitleBEl.textContent = 'Time to generate dataset';
+  booksRateAEl.textContent = '0 pages/sec';
+  booksRateBEl.textContent = '0 pages/sec';
+
+  const themeTokens = {};
+  function refreshThemeTokens() {
+    const styles = getComputedStyle(root);
+    themeTokens.sliderStart = styles.getPropertyValue('--slider-start').trim();
+    themeTokens.sliderMid = styles.getPropertyValue('--slider-mid').trim();
+    themeTokens.sliderEnd = styles.getPropertyValue('--slider-end').trim();
+    themeTokens.sliderRest = styles.getPropertyValue('--slider-rest').trim();
+    themeTokens.brand = styles.getPropertyValue('--brand').trim();
+    themeTokens.brandB = styles.getPropertyValue('--brand-b').trim();
+    themeTokens.canvasBg = styles.getPropertyValue('--canvas-bg').trim();
+    themeTokens.canvasGrid = styles.getPropertyValue('--canvas-grid').trim();
+  }
+  refreshThemeTokens();
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    refreshThemeTokens();
+    updateSliderGradient();
+  });
+
+  function getGpuCount() { return sliderToGpus(parseFloat(gpuSlider.value)); }
+
+  function updateSliderGradient() {
+    const val = parseFloat(gpuSlider.value) * 100;
+    gpuSlider.style.background = 'linear-gradient(to right, '
+      + themeTokens.sliderStart + ' 0%, '
+      + themeTokens.sliderMid + ' ' + (val * 0.5) + '%, '
+      + themeTokens.sliderEnd + ' ' + val + '%, '
+      + themeTokens.sliderRest + ' ' + val + '%)';
+  }
+  updateSliderGradient();
+
+  function formatGpuLabel(gpus) {
+    if (gpus >= 1_000_000) return (gpus / 1_000_000).toFixed(gpus >= 10_000_000 ? 0 : 1) + 'M GPUs';
+    if (gpus >= 1000) return (gpus / 1000).toFixed(gpus >= 10000 ? 0 : 1) + 'K GPUs';
+    return gpus + ' GPU' + (gpus > 1 ? 's' : '');
+  }
+  function updateGpuLabel() { gpuLabelEl.textContent = formatGpuLabel(getGpuCount()); }
+  gpuSlider.addEventListener('input', () => { updateSliderGradient(); updateGpuLabel(); });
+
+  const rowEls = { a2: $('row-a2'), a1: $('row-a1'), b1: $('row-b1'), b2: $('row-b2') };
+
+  function addLandmark(lm) {
+    const pct = gpusToSlider(lm.gpus) * 100;
+    const isAbove = lm.row.startsWith('a');
+    const el = document.createElement('div');
+    el.className = 'landmark';
+    el.style.left = pct + '%';
+    let tipClass = 'tooltip';
+    let tipStyle = '';
+    if (pct > 80) { tipClass += ' tip-right'; tipStyle = 'left:auto;right:0;transform:none;'; }
+    else if (pct < 20) { tipClass += ' tip-left'; tipStyle = 'left:0;transform:none;'; }
+    const tip = '<div class="' + tipClass + '" style="' + tipStyle + '">' + lm.desc + '</div>';
+    el.innerHTML = isAbove
+      ? '<div class="name">' + lm.name + '</div><div class="tick"></div>' + tip
+      : '<div class="tick"></div><div class="name">' + lm.name + '</div>' + tip;
+    el.addEventListener('click', () => { gpuSlider.value = gpusToSlider(lm.gpus); updateSliderGradient(); updateGpuLabel(); instances.forEach(inst => inst.reset()); });
+    rowEls[lm.row].appendChild(el);
+  }
+  TRAINING_RUNS.forEach(addLandmark);
+  INFRA_LANDMARKS.forEach(addLandmark);
+
+  const DATASETS_BASE = [
+    { name: 'BookCorpus', tokens: 1e9,
+      desc: '<b>BookCorpus</b> (2015)<br>11K unpublished books scraped from smashwords.com. Used to train the original BERT and GPT-1.' },
+    { name: 'Wikipedia', tokens: 6e9,
+      desc: '<b>Multilingual Wikipedia</b><br>All articles across all 300+ language editions. ~4.7B words, ~6B tokens. A staple ingredient in virtually every LLM pretraining mix.' },
+    { name: 'FinePhrase', tokens: 1e12,
+      desc: '<b>FinePhrase</b> (Hugging Face, 2026)<br>1T tokens of LLM-rephrased web text. Synthetic data that teaches small models to punch above their weight.' },
+    { name: 'RedPajama', tokens: 100e12,
+      desc: '<b>RedPajama v2</b> (Together AI, 2023)<br>100T raw tokens from 84 Common Crawl snapshots with quality signals. Covers 5 languages.' },
+    { name: 'Common Crawl', tokens: 3e15,
+      desc: '<b>Common Crawl</b> (ongoing since 2008)<br>The raw web archive. Petabytes of HTML from billions of pages. The upstream source for most web-text datasets.' },
+    { name: 'The Internet', tokens: 100e15,
+      desc: '<b>The entire Internet</b> (estimate)<br>Rough estimate of all text ever published online. Nobody has actually tokenized it all.' },
+  ];
+
+  const DATASETS = DATASETS_BASE;
+
+  // --- Utility functions ---
+  function formatNum(n) {
+    if (n >= 1e15) return (n / 1e15).toFixed(1) + 'Q';
+    if (n >= 1e12) return (n / 1e12).toFixed(1) + 'T';
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return Math.round(n).toString();
+  }
+
+  function formatNumInt(n) {
+    const fmt = (v, s) => (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + s;
+    if (n >= 1e15) return fmt(n / 1e15, 'Q');
+    if (n >= 1e12) return fmt(n / 1e12, 'T');
+    if (n >= 1e9) return fmt(n / 1e9, 'B');
+    if (n >= 1e6) return fmt(n / 1e6, 'M');
+    if (n >= 1e3) return fmt(n / 1e3, 'K');
+    return Math.round(n).toString();
+  }
+
+  function formatDuration(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '\u221e';
+    if (seconds < 1) return '<1s';
+    if (seconds < 60) return Math.round(seconds) + 's';
+    if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+    if (seconds < 86400) return (seconds / 3600).toFixed(1) + 'h';
+    if (seconds < 86400 * 365) return (seconds / 86400).toFixed(1) + 'd';
+    const years = seconds / (86400 * 365);
+    if (years < 1000) return years.toFixed(1) + 'y';
+    if (years < 1e6) return (years / 1e3).toFixed(1) + 'Ky';
+    if (years < 1e9) return (years / 1e6).toFixed(1) + 'My';
+    return (years / 1e9).toFixed(1) + 'By';
+  }
+
+  function getVisualMode(pps) {
+    const bps = pps / PAGES_PER_BOOK;
+    if (bps >= BOOKS_PER_SHELF) return 'shelf';
+    if (bps >= 1) return 'book';
+    return 'page';
+  }
+
+  function getHardwareLevel(gpus) {
+    if (gpus < GPUS_PER_NODE) return 'gpu';
+    if (gpus < GPUS_PER_RACK) return 'node';
+    if (gpus < GPUS_PER_SUPERPOD) return 'rack';
+    return 'cluster';
+  }
+
+  const EMOJI = { page: '\u{1F4C4}', book: '\u{1F4D6}', shelf: '\u{1F4DA}' };
+  const EMOJI_SIZE = { page: 28, book: 34, shelf: 40 };
+
+  const emojiCache = {};
+  function getEmojiCanvas(type, scale) {
+    const sz = Math.round(EMOJI_SIZE[type] * scale);
+    const key = type + '_' + sz;
+    if (emojiCache[key]) return emojiCache[key];
+    const off = document.createElement('canvas');
+    off.width = sz + 4; off.height = sz + 4;
+    const octx = off.getContext('2d');
+    octx.font = sz + 'px system-ui, sans-serif';
+    octx.textBaseline = 'top';
+    octx.fillText(EMOJI[type], 2, 2);
+    emojiCache[key] = off;
+    return off;
+  }
+
+  // --- Per-instance animation state ---
+  function createInstance(canvasRole, modelRole, datasetBarsRole, els) {
+    const canvas = $(canvasRole);
+    let ctx = canvas.getContext('2d');
+    const modelSelect = $(modelRole);
+
+    // Build dataset bar DOM
+    const datasetBarsEl = $(datasetBarsRole);
+    let dsDone = DATASETS.map(() => false);
+    const dsEls = DATASETS.map(ds => {
+      const el = document.createElement('div');
+      el.className = 'dataset-item';
+      el.innerHTML = '<span class="ds-check">\u23f3</span><span class="ds-name">' + ds.name + '</span><span class="ds-time">-</span><span class="ds-size">(' + formatNumInt(ds.tokens) + ' toks)</span><div class="ds-tip">' + ds.desc + '</div>';
+      datasetBarsEl.appendChild(el);
+      return {
+        root: el,
+        check: el.querySelector('.ds-check'),
+        time: el.querySelector('.ds-time'),
+      };
+    });
+
+    function resizeCanvas() {
+      const w = canvas.clientWidth;
+      if (!w) return;
+      const aspectRatio = w <= 640 ? 0.42 : 0.28;
+      const h = Math.round(w * aspectRatio);
+      canvas.width = w * 2;
+      canvas.height = h * 2;
+      canvas.style.height = h + 'px';
+    }
+    resizeCanvas();
+    if (window.ResizeObserver) {
+      const resizeObserver = new ResizeObserver(() => resizeCanvas());
+      if (canvas.parentElement) resizeObserver.observe(canvas.parentElement);
+    } else {
+      window.addEventListener('resize', resizeCanvas);
+    }
+
+    let floatingItems = [], totalTokens = 0, spawnAccum = 0;
+    let _fNow = 0, _fPps = 0, _fFanPhase = 0, _fBlinkSpeed = 0;
+
+    const hwCanvas = document.createElement('canvas');
+    const hwCtx = hwCanvas.getContext('2d');
+    let hwDirty = true, hwLastGpus = -1;
+
+    function getTps() { return parseInt(modelSelect.value) * getGpuCount(); }
+    function getPps() { return getTps() / TOKENS_PER_PAGE; }
+
+    function reset() {
+      totalTokens = 0;
+      floatingItems = [];
+      spawnAccum = 0;
+      hwDirty = true;
+      dsDone = DATASETS.map(() => false);
+      dsEls.forEach((dsEl) => {
+        dsEl.root.classList.remove('done');
+        dsEl.check.textContent = '\u23f3';
+        dsEl.time.textContent = '-';
+      });
+    }
+
+    gpuSlider.addEventListener('input', () => { reset(); });
+    modelSelect.addEventListener('change', () => { reset(); });
+
+    function getW() { return canvas.width; }
+    function getH() { return canvas.height; }
+
+    // --- Hardware drawing (uses ctx variable from closure) ---
+    function drawSingleGpu(x, y, gw, gh, fanPhase) {
+      ctx.fillStyle = '#2a2a2a'; ctx.fillRect(x, y, gw, gh);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, gw, gh);
+      if (gw < 12) { ctx.fillStyle = '#1a1a1a'; ctx.fillRect(x + gw * 0.15, y + gw * 0.08, gw * 0.7, gw * 0.7); return; }
+      const fs = gw * 0.7, fx = x + (gw - fs) / 2, fy = y + gw * 0.08;
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(fx, fy, fs, fs);
+      const cx = fx + fs / 2, cy = fy + fs / 2, fr = fs / 2 - 2;
+      ctx.beginPath(); ctx.arc(cx, cy, fr, 0, Math.PI * 2); ctx.fillStyle = '#333'; ctx.fill();
+      if (gw >= 20) {
+        const br = fr - 2; ctx.save(); ctx.translate(cx, cy); ctx.rotate(fanPhase);
+        const n = gw >= 40 ? 7 : 5;
+        for (let b = 0; b < n; b++) {
+          ctx.rotate(Math.PI * 2 / n); ctx.beginPath(); ctx.moveTo(0, 0);
+          ctx.quadraticCurveTo(br * 0.5, br * 0.3, br * 0.85, 0);
+          ctx.quadraticCurveTo(br * 0.5, -br * 0.3, 0, 0);
+          ctx.fillStyle = '#555'; ctx.fill();
+        }
+        ctx.restore();
+      }
+      const hy = fy + fs + 2, hh = gh - (hy - y) - gw * 0.15;
+      if (hh > 4) { const lh = Math.max(1, Math.min(4, hh / 6)), lg = lh * 1.5;
+        for (let i = 0; i * lg < hh; i++) { ctx.fillStyle = i % 2 === 0 ? '#444' : '#383838'; ctx.fillRect(x + gw * 0.1, hy + i * lg, gw * 0.8, lh); } }
+      if (gw >= 30) { ctx.fillStyle = '#c4a020'; const pw = Math.max(1, gw * 0.06), pc = Math.floor(gw * 0.7 / (pw * 2)), ps = x + (gw - pc * pw * 2) / 2;
+        for (let p = 0; p < pc; p++) ctx.fillRect(ps + p * pw * 2, y + gh, pw, Math.max(2, gw * 0.08)); }
+    }
+
+    function drawGpuGrid(count, ax, ay, aw, ah) {
+      let cols, rows;
+      if (count === 1) { cols = 1; rows = 1; }
+      else if (count === 2) { cols = 2; rows = 1; }
+      else if (count <= 4) { cols = 2; rows = 2; }
+      else { cols = 4; rows = 2; }
+      const gap = 3;
+      const gw = Math.min((aw - gap * (cols - 1)) / cols, ((ah - gap * (rows - 1)) / rows) * 0.6);
+      const gh = gw / 0.6;
+      const offX = ax + (aw - (cols * gw + (cols - 1) * gap)) / 2;
+      const offY = ay + (ah - (rows * gh + (rows - 1) * gap)) / 2;
+      for (let i = 0; i < count; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        drawSingleGpu(offX + c * (gw + gap), offY + r * (gh + gap), gw, gh, _fFanPhase + i * 0.5);
+      }
+    }
+
+    function drawSingleNode(nx, ny, nw, nh) {
+      ctx.fillStyle = '#1a1a2e';
+      ctx.beginPath(); ctx.roundRect(nx, ny, nw, nh, 4); ctx.fill();
+      ctx.strokeStyle = '#555'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(nx, ny, nw, nh, 4); ctx.stroke();
+      const slotW = (nw - 20) / 8, slotH = nh * 0.6;
+      const slotY = ny + (nh - slotH) / 2;
+      for (let i = 0; i < 8; i++) {
+        const sx = nx + 10 + i * slotW;
+        drawSingleGpu(sx + 1, slotY, slotW - 2, slotH, _fFanPhase + i * 0.5);
+      }
+      const ledAlpha = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(_fNow / (300 - _fBlinkSpeed * 1.2)));
+      ctx.globalAlpha = ledAlpha;
+      ctx.fillStyle = '#4ade80';
+      ctx.beginPath(); ctx.arc(nx + 8, ny + 8, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(_fNow / (400 - _fBlinkSpeed) + 1.5));
+      ctx.fillStyle = '#60a5fa';
+      ctx.beginPath(); ctx.arc(nx + 18, ny + 8, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    function drawNodeGrid(count, ax, ay, aw, ah) {
+      const gap = 6;
+      const cols = count <= 2 ? 1 : 2;
+      const rows = Math.ceil(count / cols);
+      const nw = (aw - gap * (cols - 1)) / cols;
+      const nh = Math.min((ah - gap * (rows - 1)) / rows, aw * 0.35);
+      const tw = cols * nw + (cols - 1) * gap;
+      const th = rows * nh + (rows - 1) * gap;
+      const ox = ax + (aw - tw) / 2, oy = ay + (ah - th) / 2;
+      for (let i = 0; i < count; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        drawSingleNode(ox + c * (nw + gap), oy + r * (nh + gap), nw, nh);
+      }
+    }
+
+    function drawSingleRack(rx, ry, rw, rh) {
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.roundRect(rx, ry, rw, rh, 4); ctx.fill();
+      ctx.strokeStyle = '#555'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(rx, ry, rw, rh, 4); ctx.stroke();
+      const nodeCount = 4, pad = 4, gap = 3;
+      const nodeH = (rh - 2 * pad - (nodeCount - 1) * gap) / nodeCount;
+      const nodeW = rw - 2 * pad;
+      for (let n = 0; n < nodeCount; n++) {
+        const ny = ry + pad + n * (nodeH + gap), nx = rx + pad;
+        ctx.fillStyle = '#1a1a2e';
+        ctx.beginPath(); ctx.roundRect(nx, ny, nodeW, nodeH, 2); ctx.fill();
+        ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.roundRect(nx, ny, nodeW, nodeH, 2); ctx.stroke();
+        const slotCount = 8, slotW = (nodeW - 6) / slotCount;
+        for (let g = 0; g < slotCount; g++) {
+          const gx = nx + 3 + g * slotW, gy = ny + 2;
+          ctx.fillStyle = '#2a2a2a'; ctx.fillRect(gx, gy, slotW - 1, nodeH - 4);
+          const fcx = gx + (slotW - 1) / 2, fcy = gy + (nodeH - 4) * 0.35;
+          const fr = Math.min((slotW - 1) * 0.35, (nodeH - 4) * 0.25);
+          if (fr > 1) {
+            ctx.beginPath(); ctx.arc(fcx, fcy, fr, 0, Math.PI * 2); ctx.fillStyle = '#444'; ctx.fill();
+            ctx.save(); ctx.translate(fcx, fcy); ctx.rotate(_fFanPhase + g * 0.3 + n);
+            for (let b = 0; b < 4; b++) { ctx.rotate(Math.PI / 2); ctx.beginPath(); ctx.moveTo(0, 0);
+              ctx.lineTo(fr * 0.8, fr * 0.3); ctx.lineTo(fr * 0.8, -fr * 0.3); ctx.fillStyle = '#666'; ctx.fill(); }
+            ctx.restore();
+          }
+        }
+        const rackLedAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(_fNow / (350 - _fBlinkSpeed) + n * 1.2));
+        ctx.globalAlpha = rackLedAlpha;
+        ctx.fillStyle = '#4ade80';
+        ctx.beginPath(); ctx.arc(nx + nodeW - 6, ny + nodeH / 2, Math.min(2, nodeH * 0.15), 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    function drawRackGrid(count, ax, ay, aw, ah) {
+      const gap = 4;
+      const cols = count <= 3 ? count : Math.min(4, Math.ceil(Math.sqrt(count)));
+      const rows = Math.ceil(count / cols);
+      const rw = (aw - gap * (cols - 1)) / cols;
+      const rh = Math.min((ah - gap * (rows - 1)) / rows, ah * 0.95);
+      const tw = cols * rw + (cols - 1) * gap;
+      const th = rows * rh + (rows - 1) * gap;
+      const ox = ax + (aw - tw) / 2, oy = ay + (ah - th) / 2;
+      for (let i = 0; i < count; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        drawSingleRack(ox + c * (rw + gap), oy + r * (rh + gap), rw, rh);
+      }
+    }
+
+    function drawPodUnit(x, y, nw, nh, total) {
+      const r = Math.min(2, nw * 0.1);
+      ctx.fillStyle = '#1a1a2e'; ctx.beginPath(); ctx.roundRect(x, y, nw, nh, r); ctx.fill();
+      ctx.strokeStyle = '#444'; ctx.lineWidth = total <= 16 ? 1 : 0.5;
+      ctx.beginPath(); ctx.roundRect(x, y, nw, nh, r); ctx.stroke();
+      if (nw < 4) return;
+      const lr = Math.max(0.8, Math.min(2, nw * 0.06)), ly = y + nh * 0.2;
+      if (total > 64) {
+        ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.arc(x + nw * 0.2, ly, lr, 0, Math.PI * 2); ctx.fill();
+      } else {
+        const podHash = (x * 31 + y * 17) & 0xffff;
+        ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(_fNow / (400 - _fBlinkSpeed) + podHash));
+        ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.arc(x + nw * 0.2, ly, lr, 0, Math.PI * 2); ctx.fill();
+        if (nw >= 8) {
+          ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(_fNow / (350 - _fBlinkSpeed) + podHash + 2));
+          ctx.fillStyle = '#60a5fa'; ctx.beginPath(); ctx.arc(x + nw * 0.4, ly, lr, 0, Math.PI * 2); ctx.fill();
+        }
+        if (nw >= 6) {
+          ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(_fNow / (300 - _fBlinkSpeed) + podHash + 4));
+          ctx.fillStyle = '#c4a020'; ctx.beginPath(); ctx.arc(x + nw * 0.6, ly, lr, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      if (nw >= 10) {
+        const vy = y + nh * 0.45, vh = nh * 0.4, lc = Math.min(6, Math.floor(nw / 4));
+        ctx.strokeStyle = '#333'; ctx.lineWidth = 0.5;
+        for (let i = 0; i < lc; i++) { const lx = x + nw * 0.2 + (nw * 0.6) * i / lc; ctx.beginPath(); ctx.moveTo(lx, vy); ctx.lineTo(lx, vy + vh); ctx.stroke(); }
+      }
+    }
+
+    function drawPodGrid(pods, ax, ay, aw, ah) {
+      const vn = Math.min(pods, 1024);
+      let cols, rows;
+      if (vn <= 2) { cols = 1; rows = vn; } else if (vn <= 4) { cols = 2; rows = 2; }
+      else if (vn <= 8) { cols = 2; rows = 4; } else if (vn <= 16) { cols = 4; rows = 4; }
+      else if (vn <= 32) { cols = 4; rows = 8; } else if (vn <= 64) { cols = 8; rows = 8; }
+      else if (vn <= 128) { cols = 8; rows = 16; } else if (vn <= 256) { cols = 16; rows = 16; }
+      else if (vn <= 512) { cols = 16; rows = 32; } else { cols = 32; rows = 32; }
+      const gap = vn <= 16 ? 3 : vn <= 64 ? 2 : 1;
+      const cw = (aw - gap * (cols - 1)) / cols, ch = (ah - gap * (rows - 1)) / rows;
+      const tw = cols * cw + (cols - 1) * gap, th = rows * ch + (rows - 1) * gap;
+      const ox = ax + (aw - tw) / 2, oy = ay + (ah - th) / 2;
+      for (let i = 0; i < vn; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        drawPodUnit(ox + c * (cw + gap), oy + r * (ch + gap), cw, ch, vn);
+      }
+      if (pods > vn) {
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        const lh = 24, lw = aw - 20, lx = ax + (aw - lw) / 2, ly = ay + ah - lh - 5;
+        ctx.fillRect(lx, ly, lw, lh); ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        const ns = pods >= 1000 ? (pods / 1000).toFixed(pods >= 10000 ? 0 : 1) + 'K' : pods.toLocaleString();
+        ctx.fillText(ns + ' SuperPODs', lx + lw / 2, ly + lh / 2);
+        ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+      }
+    }
+
+    function drawHardware() {
+      const W = getW(), H = getH();
+      const gpus = getGpuCount();
+      const needsAnim = _fPps > 0;
+      if (hwCanvas.width !== Math.ceil(W * 0.34) || hwCanvas.height !== H) {
+        hwCanvas.width = Math.ceil(W * 0.34);
+        hwCanvas.height = H;
+        hwDirty = true;
+      }
+      if (gpus !== hwLastGpus || hwDirty || needsAnim) {
+        hwLastGpus = gpus; hwDirty = false;
+        const prevCtx = ctx;
+        ctx = hwCtx;
+        ctx.clearRect(0, 0, hwCanvas.width, hwCanvas.height);
+        const pad = 10;
+        const aw = hwCanvas.width - 2 * pad, ax = pad;
+        const level = getHardwareLevel(gpus);
+        const ah = hwCanvas.height * 0.75;
+        const ay = (hwCanvas.height - ah) / 2;
+        ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+        if (level === 'gpu') drawGpuGrid(gpus, ax, ay, aw, ah);
+        else if (level === 'node') drawNodeGrid(Math.max(1, Math.round(gpus / GPUS_PER_NODE)), ax, ay, aw, ah);
+        else if (level === 'rack') drawRackGrid(Math.max(1, Math.round(gpus / GPUS_PER_RACK)), ax, ay, aw, ah);
+        else drawPodGrid(Math.round(gpus / GPUS_PER_SUPERPOD), ax, ay, aw, ah);
+        ctx = prevCtx;
+      }
+      ctx.drawImage(hwCanvas, 0, 0);
+    }
+
+    function drawItem(p, now, fadeStart, fadeRange) {
+      const off = getEmojiCanvas(p.type, p.scale);
+      const bobY = p.y + Math.sin(now / 600 + p.bobPhase) * p.bobAmp;
+      const angle = Math.sin(now / 400 + p.wobblePhase) * p.wobbleAmp;
+      const needsAlpha = p.x > fadeStart;
+      if (needsAlpha) ctx.globalAlpha = 1 - (p.x - fadeStart) / fadeRange;
+      if (Math.abs(angle) < 0.01) {
+        ctx.drawImage(off, p.x, bobY);
+      } else {
+        ctx.save();
+        ctx.translate(p.x + off.width / 2, bobY + off.height / 2);
+        ctx.rotate(angle);
+        ctx.drawImage(off, -off.width / 2, -off.height / 2);
+        ctx.restore();
+      }
+      if (needsAlpha) ctx.globalAlpha = 1;
+    }
+
+    function spawnItem() {
+      const H = getH(), W = getW();
+      const spawnX = W * 0.34;
+      const margin = H * 0.12;
+      const yMin = margin + H * 0.04, yMax = H - margin + H * 0.04, y = yMin + Math.random() * (yMax - yMin);
+      const pps = getPps();
+      const mode = getVisualMode(pps);
+      const pagesPerShelf = PAGES_PER_BOOK * BOOKS_PER_SHELF;
+      const rate = mode === 'shelf' ? pps / pagesPerShelf : mode === 'book' ? pps / PAGES_PER_BOOK : pps;
+      const bs = 0.8 + Math.log10(Math.max(1, rate)) * 0.8;
+      const scale = 0.85 + Math.random() * 0.3;
+      const bobAmp = 3 + Math.random() * 5;
+      const bobPhase = Math.random() * Math.PI * 2;
+      const wobbleAmp = mode === 'page' ? 0.15 + Math.random() * 0.25 : 0.08 + Math.random() * 0.15;
+      const wobblePhase = Math.random() * Math.PI * 2;
+      const depthSpeed = (bs + Math.random() * bs) * (0.7 + scale * 0.6);
+      floatingItems.push({
+        x: spawnX + Math.random() * 20, y, speed: depthSpeed,
+        type: mode, scale, bobAmp, bobPhase, wobbleAmp, wobblePhase
+      });
+    }
+
+    function frame(now, dt) {
+      const W = getW(), H = getH();
+      _fNow = now;
+      const tps = getTps();
+      _fPps = tps / TOKENS_PER_PAGE;
+      _fFanPhase = (now / 200) * Math.min(_fPps, 100);
+      _fBlinkSpeed = Math.min(_fPps, 200);
+
+      // Keep dataset timers accurate at any throughput, independent of capped visual spawn rate.
+      totalTokens += tps * dt;
+
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = themeTokens.canvasBg; ctx.fillRect(0, 0, W, H);
+
+      const spawnX = W * 0.34;
+      ctx.strokeStyle = themeTokens.canvasGrid; ctx.lineWidth = 1; ctx.setLineDash([4, 8]);
+      const gridMargin = H * 0.12;
+      const gridOffset = H * 0.04;
+      for (let y = gridMargin + gridOffset; y < H - gridMargin + gridOffset; y += 40) { ctx.beginPath(); ctx.moveTo(spawnX, y); ctx.lineTo(W - 20, y); ctx.stroke(); }
+      ctx.setLineDash([]);
+
+      const pps = _fPps, mode = getVisualMode(pps);
+      const pagesPerShelf = PAGES_PER_BOOK * BOOKS_PER_SHELF;
+      const spawnRate = mode === 'shelf' ? Math.min(pps / pagesPerShelf, 60) : mode === 'book' ? Math.min(pps / PAGES_PER_BOOK, 120) : Math.min(pps, 400);
+      spawnAccum += spawnRate * dt;
+      while (spawnAccum >= 1) { spawnItem(); spawnAccum -= 1; }
+
+      const fadeStart = W * 0.9;
+      const fadeRange = W - fadeStart;
+      const cullX = W + 40;
+
+      let writeIdx = 0;
+      for (let i = 0; i < floatingItems.length; i++) {
+        const p = floatingItems[i];
+        p.x += p.speed;
+        if (p.x > cullX) continue;
+        floatingItems[writeIdx++] = p;
+      }
+      floatingItems.length = writeIdx;
+
+      floatingItems.sort((a, b) => {
+        const ka = EMOJI_SIZE[a.type] * 100 + Math.round(a.scale * 30);
+        const kb = EMOJI_SIZE[b.type] * 100 + Math.round(b.scale * 30);
+        return ka - kb;
+      });
+
+      for (let i = 0; i < floatingItems.length; i++) {
+        drawItem(floatingItems[i], now, fadeStart, fadeRange);
+      }
+
+      drawHardware();
+    }
+
+    function updateMetrics(now) {
+      const tps = getTps();
+      const pps = getPps();
+      const booksPerSecond = pps / PAGES_PER_BOOK;
+      const shelvesPerSecond = booksPerSecond / BOOKS_PER_SHELF;
+      if (shelvesPerSecond >= 1) {
+        els.booksRate.textContent = formatNum(shelvesPerSecond) + ' shelves/sec';
+      } else if (booksPerSecond >= 1) {
+        els.booksRate.textContent = formatNum(booksPerSecond) + ' books/sec';
+      } else {
+        els.booksRate.textContent = formatNum(pps) + ' pages/sec';
+      }
+      els.tpsInline.textContent = '(' + formatNum(tps) + ' TPS)';
+      els.totalTokensNum.textContent = formatNum(totalTokens);
+      const totalShelves = totalTokens / TOKENS_PER_SHELF;
+      const totalBooks = totalTokens / TOKENS_PER_BOOK;
+      const totalPages = totalTokens / TOKENS_PER_PAGE;
+      if (totalShelves >= 1) {
+        els.totalItemNum.textContent = formatNum(totalShelves);
+        els.totalItemUnit.textContent = '📚';
+      } else if (totalBooks >= 1) {
+        els.totalItemNum.textContent = formatNum(totalBooks);
+        els.totalItemUnit.textContent = '📖';
+      } else {
+        els.totalItemNum.textContent = formatNum(totalPages);
+        els.totalItemUnit.textContent = '📄';
+      }
+
+      for (let i = 0; i < DATASETS.length; i++) {
+        if (dsDone[i]) continue;
+        const remaining = DATASETS[i].tokens - totalTokens;
+        if (remaining <= 0) {
+          dsDone[i] = true;
+          dsEls[i].root.classList.add('done');
+          dsEls[i].check.textContent = '\u2705';
+          dsEls[i].time.textContent = 'done';
+        } else {
+          dsEls[i].time.textContent = formatDuration(remaining / tps);
+        }
+      }
+    }
+
+    return { frame, updateMetrics, reset, getTps };
+  }
+
+  const instanceConfigs = [
+    { key: 'A', canvasRole: 'cA', modelRole: 'modelA', datasetBarsRole: 'datasetBarsA' },
+  ];
+  if (isCompareMode) {
+    instanceConfigs.push({ key: 'B', canvasRole: 'cB', modelRole: 'modelB', datasetBarsRole: 'datasetBarsB' });
+  }
+
+  const instancesByKey = {};
+  const instances = instanceConfigs.map((cfg) => {
+    const instance = createInstance(cfg.canvasRole, cfg.modelRole, cfg.datasetBarsRole, {
+      booksRate: $('booksRate' + cfg.key),
+      tpsInline: $('tpsInline' + cfg.key),
+      totalTokensNum: $('totalTokensNum' + cfg.key),
+      totalItemNum: $('totalItemNum' + cfg.key),
+      totalItemUnit: $('totalItemUnit' + cfg.key),
+    });
+    instancesByKey[cfg.key] = instance;
+    return instance;
+  });
+
+  const instA = instancesByKey.A;
+  const instB = instancesByKey.B || null;
+
+  function updateSpeedupBadge(tpsA, tpsB) {
+    if (tpsA === tpsB) {
+      speedupRatioEl.textContent = 'Same throughput';
+      speedupRatioEl.className = 'ratio';
+      return;
+    }
+    if (tpsA > tpsB) {
+      const ratio = tpsA / tpsB;
+      speedupRatioEl.textContent = 'Model A is ' + ratio.toFixed(1) + '\u00d7 faster';
+      speedupRatioEl.className = 'ratio a-faster';
+      return;
+    }
+    const ratio = tpsB / tpsA;
+    speedupRatioEl.textContent = 'Model B is ' + ratio.toFixed(1) + '\u00d7 faster';
+    speedupRatioEl.className = 'ratio b-faster';
+  }
+
+  let lastTime = performance.now(), lastMetricUpdate = 0;
+
+  function mainFrame(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.1);
+    lastTime = now;
+
+    for (let i = 0; i < instances.length; i++) {
+      instances[i].frame(now, dt);
+    }
+
+    if (now - lastMetricUpdate > 100) {
+      lastMetricUpdate = now;
+      instA.updateMetrics(now);
+
+      if (instB) {
+        instB.updateMetrics(now);
+        updateSpeedupBadge(instA.getTps(), instB.getTps());
+      }
+    }
+
+    requestAnimationFrame(mainFrame);
+  }
+
+  requestAnimationFrame(mainFrame);
+})();
+</script>
+</body>
+</html>

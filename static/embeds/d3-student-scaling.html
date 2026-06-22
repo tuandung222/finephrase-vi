@@ -1,0 +1,282 @@
+<div class="d3-student-scaling"></div>
+<style>
+  .d3-student-scaling { position: relative; }
+  .d3-student-scaling .legend {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0 0 0;
+  }
+  .d3-student-scaling .legend .legend-title {
+    font-size: 12px; font-weight: 700; color: var(--text-color);
+  }
+  .d3-student-scaling .legend .items {
+    display: flex; flex-wrap: wrap; gap: 8px 14px;
+  }
+  .d3-student-scaling .legend .item {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-color);
+  }
+  .d3-student-scaling .legend .swatch {
+    width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border-color);
+  }
+  .d3-student-scaling .d3-tooltip {
+    position: absolute; top: 0; left: 0;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none; padding: 8px 12px; border-radius: 8px;
+    font-size: 12px; line-height: 1.4;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg); color: var(--text-color);
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    opacity: 0; transition: opacity .12s ease;
+  }
+  .d3-student-scaling .spread-label {
+    font-size: 11px; font-weight: 700; font-family: var(--font-mono, monospace);
+    fill: var(--muted-color);
+  }
+  .d3-student-scaling .axes path,
+  .d3-student-scaling .axes line { stroke: var(--axis-color); }
+  .d3-student-scaling .axes text { fill: var(--tick-color); font-size: 12px; }
+  .d3-student-scaling .grid line { stroke: var(--grid-color); }
+  .d3-student-scaling .x-label,
+  .d3-student-scaling .y-label { fill: var(--text-color); font-size: 13px; }
+</style>
+<script>
+(() => {
+  const ensureD3 = (cb) => {
+    if (window.d3 && typeof window.d3.select === 'function') return cb();
+    let s = document.getElementById('d3-cdn-script');
+    if (!s) { s = document.createElement('script'); s.id = 'd3-cdn-script'; s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js'; document.head.appendChild(s); }
+    const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+    s.addEventListener('load', onReady, { once: true });
+    if (window.d3) onReady();
+  };
+
+  const bootstrap = () => {
+    const scriptEl = document.currentScript;
+    let container = scriptEl ? scriptEl.previousElementSibling : null;
+    if (!(container && container.classList && container.classList.contains('d3-student-scaling'))) {
+      const cs = Array.from(document.querySelectorAll('.d3-student-scaling'))
+        .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+      container = cs[cs.length - 1] || null;
+    }
+    if (!container) return;
+    if (container.dataset) {
+      if (container.dataset.mounted === 'true') return;
+      container.dataset.mounted = 'true';
+    }
+
+    container.style.position = container.style.position || 'relative';
+
+    // Tooltip
+    const tip = document.createElement('div');
+    tip.className = 'd3-tooltip';
+    const tipInner = document.createElement('div');
+    tipInner.style.textAlign = 'left';
+    tip.appendChild(tipInner);
+    container.appendChild(tip);
+
+    const showTip = (html, event) => {
+      tipInner.innerHTML = html;
+      tip.style.opacity = '1';
+      const cr = container.getBoundingClientRect();
+      const [mx, my] = [event.clientX - cr.left, event.clientY - cr.top];
+      const tw = tip.offsetWidth;
+      const x = mx + tw + 16 > cr.width ? mx - tw - 12 : mx + 12;
+      tip.style.transform = `translate(${x}px, ${my - 40}px)`;
+    };
+    const hideTip = () => { tip.style.opacity = '0'; tip.style.transform = 'translate(-9999px,-9999px)'; };
+
+    const svg = d3.select(container).append('svg').attr('width', '100%').style('display', 'block');
+    const gRoot = svg.append('g');
+
+    const students = ['0.5B', '1.7B', '2.9B', '6.2B'];
+    const generators = ['270M', '1B', '4B', '12B', '27B'];
+
+    const getColors = () => {
+      if (window.ColorPalettes) return window.ColorPalettes.getColors('categorical', 5);
+      return ['#f85149', '#f0883e', '#3fb950', '#58a6ff', '#bc8cff'];
+    };
+
+    let chartData = null;
+
+    const fetchCSV = async () => {
+      const paths = ['/data/student-scaling-summary.csv', './assets/data/student-scaling-summary.csv'];
+      for (const p of paths) {
+        try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return await r.text(); } catch(_){}
+      }
+      throw new Error('CSV not found');
+    };
+
+    // Legend
+    const legend = document.createElement('div');
+    legend.className = 'legend';
+    const legendTitle = document.createElement('div');
+    legendTitle.className = 'legend-title';
+    legendTitle.textContent = 'Legend';
+    legend.appendChild(legendTitle);
+    const legendItems = document.createElement('div');
+    legendItems.className = 'items';
+    legend.appendChild(legendItems);
+    container.appendChild(legend);
+
+    function buildLegend(colors) {
+      legendItems.innerHTML = '';
+      generators.forEach((g, i) => {
+        const item = document.createElement('span');
+        item.className = 'item';
+        const sw = document.createElement('span');
+        sw.className = 'swatch';
+        sw.style.background = colors[i];
+        const txt = document.createElement('span');
+        txt.textContent = g;
+        item.appendChild(sw);
+        item.appendChild(txt);
+        legendItems.appendChild(item);
+      });
+    }
+
+    const margin = { top: 20, right: 30, bottom: 50, left: 60 };
+
+    function render() {
+      if (!chartData) return;
+      const colors = getColors();
+      buildLegend(colors);
+
+      const width = container.clientWidth || 800;
+      const height = Math.max(280, Math.round(width / 2.8));
+      svg.attr('width', width).attr('height', height);
+      gRoot.attr('transform', `translate(${margin.left},${margin.top})`);
+
+      const iw = width - margin.left - margin.right;
+      const ih = height - margin.top - margin.bottom;
+
+      // Scales
+      const x0 = d3.scaleBand().domain(students).range([0, iw]).paddingInner(0.25).paddingOuter(0.1);
+      const x1 = d3.scaleBand().domain(generators).range([0, x0.bandwidth()]).padding(0.08);
+      const yMin = 0.095;
+      const yMax = d3.max(chartData, d => d.score) * 1.06;
+      const y = d3.scaleLinear().domain([yMin, yMax]).range([ih, 0]).nice();
+
+      gRoot.selectAll('*').remove();
+
+      // Grid
+      const gridG = gRoot.append('g').attr('class', 'grid');
+      gridG.selectAll('line').data(y.ticks(6)).join('line')
+        .attr('x1', 0).attr('x2', iw)
+        .attr('y1', d => y(d)).attr('y2', d => y(d));
+
+      // Axes
+      const axesG = gRoot.append('g').attr('class', 'axes');
+      axesG.append('g').attr('transform', `translate(0,${ih})`)
+        .call(d3.axisBottom(x0).tickSize(0).tickPadding(10))
+        .selectAll('text').style('font-size', '13px').style('font-weight', '600');
+
+      axesG.append('g')
+        .call(d3.axisLeft(y).ticks(6).tickFormat(d3.format('.3f')).tickSize(-iw))
+        .call(g => g.selectAll('.tick line').attr('stroke', 'var(--grid-color)'))
+        .call(g => g.select('.domain').remove());
+
+      // Axis labels
+      gRoot.append('text').attr('class', 'x-label')
+        .attr('x', iw / 2).attr('y', ih + 42)
+        .attr('text-anchor', 'middle').text('Student model size');
+
+      gRoot.append('text').attr('class', 'y-label')
+        .attr('transform', 'rotate(-90)')
+        .attr('x', -ih / 2).attr('y', -48)
+        .attr('text-anchor', 'middle').text('Aggregate macro score');
+
+      // Bars
+      const barsG = gRoot.append('g');
+
+      students.forEach(student => {
+        const sData = chartData.filter(d => d.student === student);
+        const gBars = barsG.append('g').attr('transform', `translate(${x0(student)},0)`);
+
+        gBars.selectAll('rect').data(sData).join('rect')
+          .attr('x', d => x1(d.generator))
+          .attr('y', d => y(d.score))
+          .attr('width', x1.bandwidth())
+          .attr('height', d => Math.max(0.5, ih - y(d.score)))
+          .attr('fill', (d, i) => colors[generators.indexOf(d.generator)])
+          .attr('rx', 2)
+          .on('mouseenter', (event, d) => {
+            const gi = generators.indexOf(d.generator);
+            showTip(
+              `<strong>${d.student} student + ${d.generator} generator</strong><br/>` +
+              `Macro score: <strong>${d.score.toFixed(4)}</strong>`,
+              event
+            );
+          })
+          .on('mousemove', (event, d) => {
+            showTip(
+              `<strong>${d.student} student + ${d.generator} generator</strong><br/>` +
+              `Macro score: <strong>${d.score.toFixed(4)}</strong>`,
+              event
+            );
+          })
+          .on('mouseleave', hideTip);
+      });
+
+      // Spread annotations
+      const spreadG = gRoot.append('g');
+      students.forEach(student => {
+        const sData = chartData.filter(d => d.student === student);
+        const lo = d3.min(sData, d => d.score);
+        const hi = d3.max(sData, d => d.score);
+        const spread = hi - lo;
+        const cx = x0(student) + x0.bandwidth() + 6;
+
+        // Arrow line
+        spreadG.append('line')
+          .attr('x1', cx).attr('x2', cx)
+          .attr('y1', y(hi) + 2).attr('y2', y(lo) - 2)
+          .attr('stroke', 'var(--muted-color)')
+          .attr('stroke-width', 1.5);
+
+        // Arrow heads
+        [y(hi), y(lo)].forEach((yy, idx) => {
+          const dir = idx === 0 ? 1 : -1;
+          spreadG.append('path')
+            .attr('d', `M${cx - 3},${yy + dir * 4} L${cx},${yy} L${cx + 3},${yy + dir * 4}`)
+            .attr('stroke', 'var(--muted-color)')
+            .attr('stroke-width', 1.5)
+            .attr('fill', 'none');
+        });
+
+        // Label (above the arrow)
+        spreadG.append('text')
+          .attr('class', 'spread-label')
+          .attr('x', cx)
+          .attr('y', y(hi) - 8)
+          .attr('text-anchor', 'middle')
+          .attr('dominant-baseline', 'auto')
+          .text(`\u0394 ${spread.toFixed(3)}`);
+      });
+    }
+
+    fetchCSV().then(text => {
+      chartData = d3.csvParse(text, d => ({
+        student: d.student,
+        generator: d.generator,
+        score: +d.score
+      }));
+      render();
+    }).catch(err => {
+      const pre = document.createElement('pre');
+      pre.style.color = 'red';
+      pre.textContent = `Error loading data: ${err.message}`;
+      container.appendChild(pre);
+    });
+
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => render()).observe(container);
+    } else {
+      window.addEventListener('resize', render);
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+  } else {
+    ensureD3(bootstrap);
+  }
+})();
+</script>

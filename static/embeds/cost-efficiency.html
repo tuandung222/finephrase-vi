@@ -1,0 +1,498 @@
+<div class="d3-cost-efficiency" style="width:100%;margin:10px 0;min-height:400px;"></div>
+<style>
+  .d3-cost-efficiency { font-family: system-ui, -apple-system, sans-serif; position: relative; }
+  .d3-cost-efficiency .d3-tooltip {
+    position: absolute; top: 0; left: 0;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none;
+    padding: 10px 14px; border-radius: 10px;
+    font-size: 13px; line-height: 1.4;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg); color: var(--text-color);
+    box-shadow: 0 6px 24px rgba(0,0,0,.22);
+    opacity: 0; transition: opacity .12s ease;
+    z-index: 20; max-width: 340px;
+  }
+  .d3-cost-efficiency .controls {
+    display: flex; gap: 16px; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .d3-cost-efficiency .control-group {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  }
+  .d3-cost-efficiency .controls label {
+    font-size: 13px; font-weight: 700; color: var(--text-color);
+  }
+  .d3-cost-efficiency .controls select {
+    font-size: 13px; padding: 6px 28px 6px 10px; border: 1px solid var(--border-color);
+    border-radius: 8px; background: var(--surface-bg); color: var(--text-color);
+    appearance: none; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%23888' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+  }
+  .d3-cost-efficiency .legend {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px;
+  }
+  .d3-cost-efficiency .legend-title { font-size: 13px; font-weight: 700; color: var(--text-color); }
+  .d3-cost-efficiency .legend .items { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  .d3-cost-efficiency .legend .item {
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+    font-size: 13px; color: var(--text-color); cursor: pointer;
+  }
+  .d3-cost-efficiency .legend .swatch {
+    width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border-color);
+  }
+</style>
+<script>
+(() => {
+  const ensureD3 = (cb) => {
+    if (window.d3 && typeof window.d3.select === 'function') return cb();
+    let s = document.getElementById('d3-cdn-script');
+    if (!s) { s = document.createElement('script'); s.id = 'd3-cdn-script'; s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js'; document.head.appendChild(s); }
+    const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+    s.addEventListener('load', onReady, { once: true });
+    if (window.d3) onReady();
+  };
+
+  const bootstrap = () => {
+    const scriptEl = document.currentScript;
+    let container = scriptEl ? scriptEl.previousElementSibling : null;
+    while (container && !(container.classList && container.classList.contains('d3-cost-efficiency'))) {
+      container = container.previousElementSibling;
+    }
+    if (!container) {
+      const cs = Array.from(document.querySelectorAll('.d3-cost-efficiency'))
+        .filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+      container = cs[cs.length - 1] || null;
+    }
+    if (!container) return;
+    if (container.dataset.mounted === 'true') return;
+    container.dataset.mounted = 'true';
+
+    let mountEl = container;
+    while (mountEl && !mountEl.getAttribute?.('data-datafiles')) mountEl = mountEl.parentElement;
+    const dataAttr = mountEl?.getAttribute?.('data-datafiles');
+    const dataPaths = dataAttr
+      ? [dataAttr.includes('/') ? dataAttr : `/data/${dataAttr}`]
+      : ['/data/rephrasing_metadata.json', './assets/data/rephrasing_metadata.json'];
+
+    const fetchFirst = async (paths, parse) => {
+      for (const p of paths) {
+        try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return parse ? parse(await r.text()) : r.json(); } catch(_) {}
+      }
+      throw new Error('Data not found');
+    };
+
+    const csvPaths = ['/data/benchmark-results.csv', './assets/data/benchmark-results.csv'];
+
+    Promise.all([
+      fetchFirst(dataPaths),
+      fetchFirst(csvPaths, d3.csvParse)
+    ]).then(([data, csvRows]) => buildChart(data, csvRows)).catch(err => {
+      container.innerHTML = `<pre style="color:red;padding:12px;">Error loading data: ${err.message}</pre>`;
+    });
+
+    function buildChart(rawData, csvRows) {
+      const SOURCE_MAP = {
+        'fineweb-edu-hq-20BT': 'FW-Edu HQ', 'fineweb-edu-lq-20BT': 'FW-Edu LQ',
+        'dclm-37BT': 'DCLM', 'cosmopedia-25BT': 'Cosmopedia'
+      };
+      const PROMPT_LABELS = {
+        'article': 'Article', 'commentary': 'Commentary', 'discussion': 'Discussion',
+        'faq': 'FAQ', 'math': 'Math', 'table': 'Table', 'tutorial': 'Tutorial',
+        'distill': 'Distill', 'diverse_qa_pairs': 'Diverse QA',
+        'extract_knowledge': 'Extract Knowledge', 'knowledge_list': 'Knowledge List',
+        'wikipedia_style_rephrasing': 'Wikipedia Style',
+        'guided_rewrite_improved': 'Guided Rewrite+', 'guided_rewrite_original': 'Guided Rewrite',
+        'explanation': 'Explanation', 'narrative': 'Narrative'
+      };
+      const resolvePromptLabel = (key) =>
+        PROMPT_LABELS[key] || PROMPT_LABELS[Object.keys(PROMPT_LABELS).find(k => key.startsWith(k + '-'))] || key;
+      const CAT_MAP = { 'format': 'Format', 'nemotron': 'Nemotron', 'rewire': 'REWIRE' };
+      const getFamily = (m) => {
+        const ml = m.toLowerCase();
+        if (ml.includes('smollm')) return 'SmolLM2';
+        if (ml.includes('gemma')) return 'Gemma';
+        if (ml.includes('qwen')) return 'Qwen';
+        if (ml.includes('falcon')) return 'Falcon';
+        if (ml.includes('granite')) return 'Granite';
+        if (ml.includes('llama')) return 'Llama';
+        return 'Other';
+      };
+      const familyColors = {
+        'Gemma': '#5b9bd5', 'Qwen': '#e07b54', 'SmolLM2': '#e06b9e',
+        'Falcon': '#c9a046', 'Granite': '#9a8ec2', 'Llama': '#8bc474'
+      };
+      const familyOrder = ['Gemma', 'Qwen', 'SmolLM2', 'Falcon', 'Granite', 'Llama'];
+
+      const METRICS = [
+        { key: 'agg_score_macro', label: 'Aggregate Score (Macro)', group: 'Aggregate' },
+        { key: 'agg_score_micro', label: 'Aggregate Score (Micro)', group: 'Aggregate' },
+        { key: 'agg_score_RC', label: 'Reading Comprehension', group: 'Aggregate' },
+        { key: 'agg_score_GK', label: 'General Knowledge', group: 'Aggregate' },
+        { key: 'agg_score_NLU', label: 'Natural Language Understanding', group: 'Aggregate' },
+        { key: 'agg_score_MATH', label: 'Math', group: 'Aggregate' },
+        { key: 'agg_score_TABLE', label: 'Table Understanding', group: 'Aggregate' },
+        { key: 'agg_score_RES', label: 'Reasoning', group: 'Aggregate' },
+        { key: 'arc_cf:easy', label: 'ARC-Easy', group: 'Individual' },
+        { key: 'drop', label: 'DROP', group: 'Individual' },
+        { key: 'gsm8k', label: 'GSM8K', group: 'Individual' },
+        { key: 'hellaswag_cf', label: 'HellaSwag', group: 'Individual' },
+        { key: 'openbookqa_cf', label: 'OpenBookQA', group: 'Individual' },
+        { key: 'piqa_cf', label: 'PIQA', group: 'Individual' },
+        { key: 'squad_v2', label: 'SQuAD v2', group: 'Individual' },
+        { key: 'treb_qa', label: 'TriviaQA', group: 'Individual' },
+        { key: 'wikitablequestions', label: 'WikiTableQuestions', group: 'Individual' },
+        { key: 'winogrande_cf', label: 'Winogrande', group: 'Individual' },
+        { key: 'xcsqa_cf', label: 'XCSQA', group: 'Individual' },
+        { key: 'mmlu_redux_cf:_average', label: 'MMLU Redux', group: 'Individual' }
+      ];
+      // Map JSON result keys to CSV column names (CSV uses lighteval| prefix for individual benchmarks)
+      const CSV_COL = (key) => {
+        if (key.startsWith('agg_score_')) return key;
+        return `lighteval|${key}|3/prob_norm_token`;
+      };
+
+      const experiments = rawData.map(d => {
+        const [cat, promptFile] = d.prompt.split('/');
+        const promptKey = promptFile.replace('.md', '');
+        return {
+          run: d.run,
+          cat: CAT_MAP[cat] || cat,
+          prompt: resolvePromptLabel(promptKey),
+          model: d.model.split('/').pop(),
+          source: SOURCE_MAP[d.source_dataset] || d.source_dataset,
+          family: getFamily(d.model),
+          gpuSeconds: d.gpu_time_seconds,
+          tpsPerGpu: d.output_tps_per_gpu,
+          outputTokens: d.output_tokens,
+          numDocs: d.num_documents,
+          results: d.results
+        };
+      });
+
+      // Format GPU time showing the two largest units
+      const fmtGpuTime = (sec) => {
+        const d = sec / 86400;
+        if (d >= 365) { const y = Math.floor(d / 365); const mo = Math.round((d % 365) / 30); return mo ? y + 'y ' + mo + 'mo' : y + 'y'; }
+        if (d >= 30) { const mo = Math.floor(d / 30); const w = Math.round((d % 30) / 7); return w ? mo + 'mo ' + w + 'w' : mo + 'mo'; }
+        if (d >= 7) { const w = Math.floor(d / 7); const dd = Math.round(d % 7); return dd ? w + 'w ' + dd + 'd' : w + 'w'; }
+        return Math.round(d) + 'd';
+      };
+
+      // Compute Pareto frontier (lowest gpu time for highest score)
+      const pareto = (data, metricKey) => {
+        const sorted = [...data].sort((a, b) => a.gpuSeconds - b.gpuSeconds);
+        const frontier = [];
+        let bestScore = -Infinity;
+        // Sweep from cheapest to most expensive, keep points that set new high scores
+        // But we want the *upper-left* frontier, so sweep right and track max
+        // Actually: Pareto = non-dominated. Point is dominated if another has both lower cost AND higher score.
+        for (const pt of sorted) {
+          const score = pt.results[metricKey];
+          if (score == null) continue;
+          if (score > bestScore) {
+            bestScore = score;
+            frontier.push(pt);
+          }
+        }
+        return frontier;
+      };
+
+      // Extract baseline scores from CSV (max step per baseline run)
+      const BASELINE_RUNS = {
+        'dclm': { label: 'DCLM', synthetic: false },
+        'fw_edu_hq': { label: 'FW-Edu HQ', synthetic: false },
+        'fw_edu_lq': { label: 'FW-Edu LQ', synthetic: false },
+        'ultra-fineweb': { label: 'Ultra-FineWeb', synthetic: false },
+        'cosmopedia': { label: 'Cosmopedia', synthetic: true },
+        'nemotron_hq_synth': { label: 'Nemotron-HQ-Synth', synthetic: true },
+        'rewire': { label: 'REWIRE', synthetic: true },
+        'synth_query_reasoning_answer': { label: 'SYNTH', synthetic: true }
+      };
+      const BASELINE_COLOR = '#86a1a9';
+      const SYNTH_BASELINE_COLOR = '#b07cc8';
+      const metricKeys = METRICS.map(m => m.key);
+      const baselines = [];
+      const bestStep = {};
+      for (const row of csvRows) {
+        const run = row.runname;
+        if (!(run in BASELINE_RUNS)) continue;
+        const step = +row.steps;
+        if (!(run in bestStep) || step > bestStep[run].step) {
+          const results = {};
+          for (const k of metricKeys) results[k] = +row[CSV_COL(k)];
+          bestStep[run] = { step, results };
+        }
+      }
+      for (const [run, info] of Object.entries(BASELINE_RUNS)) {
+        if (run in bestStep) baselines.push({ run, label: info.label, synthetic: info.synthetic, results: bestStep[run].results });
+      }
+
+      let currentMetric = METRICS[0].key;
+
+      // SVG
+      const svg = d3.select(container).append('svg').attr('width', '100%').style('display', 'block');
+      const gGrid = svg.append('g').attr('class', 'grid');
+      const gPareto = svg.append('g').attr('class', 'pareto');
+      const gDots = svg.append('g').attr('class', 'dots');
+      const gBaselines = svg.append('g').attr('class', 'baselines');
+      const gAxes = svg.append('g').attr('class', 'axes');
+
+      // Tooltip
+      let tip = container.querySelector('.d3-tooltip');
+      let tipInner;
+      if (!tip) {
+        tip = document.createElement('div'); tip.className = 'd3-tooltip';
+        tipInner = document.createElement('div'); tipInner.className = 'd3-tooltip__inner';
+        tipInner.style.textAlign = 'left';
+        tip.appendChild(tipInner); container.appendChild(tip);
+      } else { tipInner = tip.querySelector('.d3-tooltip__inner') || tip; }
+
+      const margin = { top: 12, right: 16, bottom: 48, left: 56 };
+
+      function render() {
+        const width = container.clientWidth || 800;
+        const height = Math.max(360, Math.round(width / 2.2));
+        svg.attr('width', width).attr('height', height);
+        const iw = width - margin.left - margin.right;
+        const ih = height - margin.top - margin.bottom;
+
+        const metricLabel = METRICS.find(m => m.key === currentMetric)?.label || currentMetric;
+
+        // Scales – left bound at 5 days so baseline dots + 1w tick have room
+        const xScale = d3.scaleLog()
+          .domain([5 * 86400, d3.max(experiments, d => d.gpuSeconds) * 1.2])
+          .range([margin.left, width - margin.right]);
+
+        const yVals = experiments.map(d => d.results[currentMetric]).filter(v => v != null)
+          .concat(baselines.map(d => d.results[currentMetric]).filter(v => v != null));
+        const yPad = (d3.max(yVals) - d3.min(yVals)) * 0.08;
+        const yScale = d3.scaleLinear()
+          .domain([d3.min(yVals) - yPad, d3.max(yVals) + yPad])
+          .range([height - margin.bottom, margin.top]);
+
+        // Grid lines
+        const yTicks = yScale.ticks(6);
+        gGrid.selectAll('line').data(yTicks).join('line')
+          .attr('x1', margin.left).attr('x2', width - margin.right)
+          .attr('y1', d => yScale(d)).attr('y2', d => yScale(d))
+          .attr('stroke', 'var(--grid-color)').attr('stroke-width', 0.5);
+
+        // Axes
+        gAxes.selectAll('*').remove();
+        // Tick values at nice human intervals: 1w, 2w, 1mo, 2mo, 4mo, 8mo, 16mo
+        const tickDays = [7, 14, 30, 60, 120, 240, 480];
+        const [xMin, xMax] = xScale.domain();
+        const tickValues = tickDays.map(d => d * 86400).filter(v => v >= xMin && v <= xMax);
+        const xAxis = d3.axisBottom(xScale).tickValues(tickValues).tickFormat(fmtGpuTime);
+        gAxes.append('g')
+          .attr('transform', `translate(0,${height - margin.bottom})`)
+          .call(xAxis)
+          .call(g => g.select('.domain').attr('stroke', 'var(--axis-color)'))
+          .call(g => g.selectAll('.tick line').attr('stroke', 'var(--tick-color)'))
+          .call(g => g.selectAll('.tick text').attr('fill', 'var(--tick-color)').attr('font-size', '13px'));
+
+        const yAxis = d3.axisLeft(yScale).ticks(6).tickFormat(v => { const s = v.toFixed(3); return s.replace(/0$/, ''); });
+        gAxes.append('g')
+          .attr('transform', `translate(${margin.left},0)`)
+          .call(yAxis)
+          .call(g => g.select('.domain').attr('stroke', 'var(--axis-color)'))
+          .call(g => g.selectAll('.tick line').attr('stroke', 'var(--tick-color)'))
+          .call(g => g.selectAll('.tick text').attr('fill', 'var(--tick-color)').attr('font-size', '13px'));
+
+        // Axis labels
+        gAxes.append('text')
+          .attr('x', margin.left + iw / 2).attr('y', height - 4)
+          .attr('text-anchor', 'middle').attr('fill', 'var(--text-color)')
+          .attr('font-size', '14px').attr('font-weight', '600')
+          .text('GPU time (log scale)');
+
+        gAxes.append('text')
+          .attr('transform', `rotate(-90)`)
+          .attr('x', -(margin.top + ih / 2)).attr('y', 14)
+          .attr('text-anchor', 'middle').attr('fill', 'var(--text-color)')
+          .attr('font-size', '14px').attr('font-weight', '600')
+          .text(metricLabel);
+
+        // Pareto frontier
+        const frontierPts = pareto(experiments, currentMetric);
+        const lineGen = d3.line()
+          .x(d => xScale(d.gpuSeconds))
+          .y(d => yScale(d.results[currentMetric]));
+
+        // Extend frontier line to right edge at the max score level
+        const extendedFrontier = [...frontierPts];
+        if (frontierPts.length > 0) {
+          const last = frontierPts[frontierPts.length - 1];
+          extendedFrontier.push({ gpuSeconds: xScale.domain()[1], results: { [currentMetric]: last.results[currentMetric] } });
+        }
+
+        gPareto.selectAll('path').data([extendedFrontier]).join('path')
+          .attr('d', lineGen)
+          .attr('fill', 'none')
+          .attr('stroke', 'var(--primary-color)')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,4')
+          .attr('opacity', 0.6);
+
+        // Dots
+        const rBase = Math.max(5, Math.min(9, width * 0.008));
+
+        gDots.selectAll('circle').data(experiments, d => d.run).join('circle')
+          .attr('cx', d => xScale(d.gpuSeconds))
+          .attr('cy', d => yScale(d.results[currentMetric]))
+          .attr('r', rBase)
+          .attr('fill', d => familyColors[d.family] || '#999')
+          .attr('fill-opacity', 0.8)
+          .attr('stroke', d => familyColors[d.family] || '#999')
+          .attr('stroke-width', 1.5)
+          .attr('stroke-opacity', 0.3)
+          .attr('cursor', 'pointer')
+          .on('mouseenter', function(ev, d) {
+            d3.select(this).attr('r', rBase * 1.6).attr('fill-opacity', 1).attr('stroke-opacity', 0.8);
+            gDots.selectAll('circle').filter(c => c !== d)
+              .attr('fill-opacity', 0.2).attr('stroke-opacity', 0.1);
+            gBaselines.selectAll('line').attr('stroke-opacity', 0.15);
+            const score = d.results[currentMetric];
+            tipInner.innerHTML =
+              `<div style="font-weight:700;font-size:14px;margin-bottom:4px;">${d.prompt} (${d.cat})</div>` +
+              `<div style="font-size:12px;color:var(--muted-color);margin-bottom:6px;">` +
+              `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${familyColors[d.family]};margin-right:4px;vertical-align:middle;"></span>` +
+              `${d.model} · ${d.source}</div>` +
+              `<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:13px;">` +
+              `<span style="color:var(--muted-color);">GPU time</span><span>${fmtGpuTime(d.gpuSeconds)}</span>` +
+              `<span style="color:var(--muted-color);">TPS/GPU</span><span>${d.tpsPerGpu.toLocaleString()}</span>` +
+              `<span style="color:var(--muted-color);">Output tokens</span><span>${(d.outputTokens / 1e9).toFixed(1)}B</span>` +
+              `<span style="color:var(--muted-color);">Documents</span><span>${(d.numDocs / 1e6).toFixed(1)}M</span>` +
+              `<span style="color:var(--muted-color);">${metricLabel}</span><span style="font-weight:700;">${score != null ? score.toFixed(4) : 'N/A'}</span>` +
+              `</div>`;
+            tip.style.opacity = '1';
+          })
+          .on('mousemove', (ev) => {
+            const [mx, my] = d3.pointer(ev, container);
+            const bw = tip.offsetWidth || 280;
+            const bh = tip.offsetHeight || 160;
+            const ox = (mx + bw + 20 > width) ? -(bw + 12) : 14;
+            const oy = (my + bh + 20 > (height + 60)) ? -(bh + 12) : 14;
+            tip.style.transform = `translate(${Math.round(mx + ox)}px,${Math.round(my + oy)}px)`;
+          })
+          .on('mouseleave', function() {
+            gDots.selectAll('circle').attr('r', rBase).attr('fill-opacity', 0.8).attr('stroke-opacity', 0.3);
+            gBaselines.selectAll('line').attr('stroke-width', 2.5).attr('stroke-opacity', 0.7);
+            tip.style.opacity = '0';
+            tip.style.transform = 'translate(-9999px,-9999px)';
+          });
+
+        // Baseline ticks (horizontal marks on the y-axis since they have no GPU rephrasing cost)
+        const bTickHalf = 10;
+        const bx = margin.left;
+        const bColor = d => d.synthetic ? SYNTH_BASELINE_COLOR : BASELINE_COLOR;
+        gBaselines.selectAll('line').data(baselines, d => d.run).join('line')
+          .attr('x1', bx - bTickHalf)
+          .attr('x2', bx + bTickHalf)
+          .attr('y1', d => yScale(d.results[currentMetric]))
+          .attr('y2', d => yScale(d.results[currentMetric]))
+          .attr('stroke', bColor)
+          .attr('stroke-width', 2.5)
+          .attr('stroke-opacity', 0.7)
+          .attr('cursor', 'pointer')
+          .on('mouseenter', function(ev, d) {
+            d3.select(this).attr('stroke-width', 4).attr('stroke-opacity', 1);
+            gDots.selectAll('circle').attr('fill-opacity', 0.15).attr('stroke-opacity', 0.08);
+            const score = d.results[currentMetric];
+            const tag = d.synthetic ? 'synthetic baseline' : 'baseline';
+            tipInner.innerHTML =
+              `<div style="font-weight:700;font-size:14px;margin-bottom:4px;">${d.label} <span style="font-weight:400;font-size:12px;color:var(--muted-color);">(${tag})</span></div>` +
+              `<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:13px;">` +
+              `<span style="color:var(--muted-color);">GPU time</span><span>0 (no rephrasing)</span>` +
+              `<span style="color:var(--muted-color);">${metricLabel}</span><span style="font-weight:700;">${score != null ? score.toFixed(4) : 'N/A'}</span>` +
+              `</div>`;
+            tip.style.opacity = '1';
+          })
+          .on('mousemove', (ev) => {
+            const [mx, my] = d3.pointer(ev, container);
+            const bw = tip.offsetWidth || 280;
+            const bh = tip.offsetHeight || 100;
+            const ox = (mx + bw + 20 > width) ? -(bw + 12) : 14;
+            const oy = (my + bh + 20 > (height + 60)) ? -(bh + 12) : 14;
+            tip.style.transform = `translate(${Math.round(mx + ox)}px,${Math.round(my + oy)}px)`;
+          })
+          .on('mouseleave', function() {
+            gBaselines.selectAll('line').attr('stroke-width', 2.5).attr('stroke-opacity', 0.7);
+            gDots.selectAll('circle').attr('r', rBase).attr('fill-opacity', 0.8).attr('stroke-opacity', 0.3);
+            tip.style.opacity = '0';
+            tip.style.transform = 'translate(-9999px,-9999px)';
+          });
+      }
+
+      // Controls
+      const controls = document.createElement('div'); controls.className = 'controls';
+      const cg = document.createElement('div'); cg.className = 'control-group';
+      const lbl = document.createElement('label'); lbl.textContent = 'Metric'; lbl.setAttribute('for', 'ce-metric-select');
+      const sel = document.createElement('select'); sel.id = 'ce-metric-select';
+      const groups = {};
+      METRICS.forEach(m => { (groups[m.group] = groups[m.group] || []).push(m); });
+      for (const [gName, gMetrics] of Object.entries(groups)) {
+        const og = document.createElement('optgroup'); og.label = gName;
+        gMetrics.forEach(m => { const o = document.createElement('option'); o.value = m.key; o.textContent = m.label; og.appendChild(o); });
+        sel.appendChild(og);
+      }
+      sel.value = currentMetric;
+      sel.addEventListener('change', () => { currentMetric = sel.value; render(); });
+      cg.appendChild(lbl); cg.appendChild(sel); controls.appendChild(cg); container.appendChild(controls);
+
+      // Legend
+      const legend = document.createElement('div'); legend.className = 'legend';
+      const ltitle = document.createElement('div'); ltitle.className = 'legend-title'; ltitle.textContent = 'Legend';
+      const items = document.createElement('div'); items.className = 'items';
+      familyOrder.forEach(fam => {
+        const el = document.createElement('span'); el.className = 'item';
+        const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = familyColors[fam];
+        const txt = document.createElement('span'); txt.textContent = fam;
+        el.appendChild(sw); el.appendChild(txt); items.appendChild(el);
+        el.addEventListener('mouseenter', () => {
+          gDots.selectAll('circle').attr('fill-opacity', d => d.family === fam ? 0.9 : 0.1)
+            .attr('stroke-opacity', d => d.family === fam ? 0.6 : 0.05);
+          gBaselines.selectAll('line').attr('stroke-opacity', 0.15);
+        });
+        el.addEventListener('mouseleave', () => {
+          gDots.selectAll('circle').attr('fill-opacity', 0.8).attr('stroke-opacity', 0.3);
+          gBaselines.selectAll('line').attr('stroke-width', 2.5).attr('stroke-opacity', 0.7);
+        });
+      });
+      legend.appendChild(ltitle); legend.appendChild(items); container.appendChild(legend);
+
+      // Baseline legend items (one per group)
+      [[false, BASELINE_COLOR, 'Baselines'],
+       [true, SYNTH_BASELINE_COLOR, 'Synthetic baselines']].forEach(([isSynth, c, text]) => {
+        const el = document.createElement('span'); el.className = 'item';
+        el.innerHTML = `<svg width="14" height="14" style="vertical-align:middle;"><line x1="1" y1="7" x2="13" y2="7" stroke="${c}" stroke-width="2.5" stroke-opacity="0.7"/></svg><span>${text}</span>`;
+        items.appendChild(el);
+        el.addEventListener('mouseenter', () => {
+          gBaselines.selectAll('line')
+            .attr('stroke-opacity', d => d.synthetic === isSynth ? 1 : 0.15)
+            .attr('stroke-width', d => d.synthetic === isSynth ? 4 : 2.5);
+          gDots.selectAll('circle').attr('fill-opacity', 0.15).attr('stroke-opacity', 0.08);
+        });
+        el.addEventListener('mouseleave', () => {
+          gBaselines.selectAll('line').attr('stroke-width', 2.5).attr('stroke-opacity', 0.7);
+          gDots.selectAll('circle').attr('fill-opacity', 0.8).attr('stroke-opacity', 0.3);
+        });
+      });
+
+      // Pareto legend item
+      const paretoItem = document.createElement('span'); paretoItem.className = 'item';
+      paretoItem.innerHTML = `<svg width="20" height="14" style="vertical-align:middle;"><line x1="0" y1="7" x2="20" y2="7" stroke="var(--primary-color)" stroke-width="2" stroke-dasharray="4,3" opacity="0.6"/></svg><span>Pareto frontier</span>`;
+      items.appendChild(paretoItem);
+
+      render();
+      if (window.ResizeObserver) new ResizeObserver(() => render()).observe(container);
+      else window.addEventListener('resize', render);
+    }
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true });
+  else ensureD3(bootstrap);
+})();
+</script>

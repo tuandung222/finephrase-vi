@@ -1,0 +1,1133 @@
+<!--
+  Reusable bar/line chart for benchmark comparisons.
+
+  Configuration via data-config attribute:
+  {
+    "datasets": {                                                           // required (unless using setups)
+      "raw_name": "Display Name",                                           //   shorthand: string = display name
+      "raw_name": { "display": "Name", "color": "#hex", "shaded": true, "baseline": true }
+                                                                            //   full form: display is required, rest optional
+    },
+    "setups":         { "Setup Label": { "datasets": {...} }, ... },        // optional, multi-setup mode with dropdown + average
+    "setupDimension": {                                                    // optional, adds a second dropdown that groups setups
+      "label": "Student",                                                  //   dropdown label
+      "groups": {                                                          //   maps dimension values → lists of setup keys
+        "0.5B student": ["Math (0.5B)", "Tutorial (0.5B)"],                //   only these setups are shown when this group is active
+        "1.7B student": ["Math (1.7B)", "Tutorial (1.7B)"]
+      }
+    },
+    "defaultMetric":  "agg_score_macro",                                    // optional, default: "agg_score_macro"
+    "defaultView":    "bar",                                                // optional, "bar" | "line", default: "bar"
+    "sortBars":       true,                                                 // optional, bar view: true sorts bars by value (default), false keeps datasets declaration order
+    "defaultSetup":   "average",                                            // optional, setup name or "average", default: "average" when ≥2 setups
+    "tokensPerStep":  2100000,                                              // optional, default: 2.1e6
+    "runColumn":      "runname",                                            // optional, CSV column for series, default: "runname"
+    "stepColumn":     "steps"                                               // optional, CSV column for x-axis, default: "steps"
+  }
+
+  Per-dataset options (all optional except display):
+    display:   Display name shown in legend, axes, and tooltips
+    color:     Pinned hex color (otherwise auto-assigned from palette)
+    shaded:    If true, bar gets a diagonal-stripe pattern (useful for aggregate baselines)
+    baseline:  If true, rendered as a reference line (vertical in bar view, horizontal in line view)
+               instead of a regular bar/line. Not shown in the legend.
+
+  Data: uses benchmark-results.csv by default (one CSV with all runs).
+  Only rows matching keys in datasets are displayed.
+
+  Example usage in MDX:
+  <HtmlEmbed
+    src="d3-benchmark-comparison.html"
+    title="Baseline Comparison"
+    config={{
+      datasets: {
+        cosmopedia: "Cosmopedia",
+        dclm: { display: "Baseline (DCLM)", baseline: true },
+        nemotron_hq_synth: { display: "Nemotron-HQ-Synth", color: "#76b900", shaded: true }
+      }
+    }}
+  />
+-->
+<div class="d3-benchmark-comparison"></div>
+<style>
+  .d3-benchmark-comparison { position: relative; }
+  .d3-benchmark-comparison .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+    justify-content: center;
+    margin: 10px 0 0 0;
+  }
+  .d3-benchmark-comparison .controls .control-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .d3-benchmark-comparison .controls label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-color);
+  }
+  .d3-benchmark-comparison .controls select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 6px 28px 6px 10px;
+    background-color: var(--surface-bg);
+    color: var(--text-color);
+    font-size: 13px;
+    line-height: 1.2;
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1.41 1.59L6 6.17l4.59-4.58L12 3 6 9 0 3z' fill='%23999'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+  }
+  .d3-benchmark-comparison .controls select:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+  .d3-benchmark-comparison .legend {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 8px 0 0 0;
+    padding-bottom: 4px;
+  }
+  .d3-benchmark-comparison .legend .legend-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-color);
+  }
+  .d3-benchmark-comparison .legend .items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+  }
+  .d3-benchmark-comparison .legend .item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-color);
+    cursor: pointer;
+  }
+  .d3-benchmark-comparison .legend .item.ghost { opacity: .25; }
+  .d3-benchmark-comparison .legend .swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+  }
+  .d3-benchmark-comparison .bar.ghost { opacity: .25; }
+  .d3-benchmark-comparison .value-label.ghost { opacity: .25; }
+  .d3-benchmark-comparison .line-path { fill: none; stroke-width: 2; opacity: 0.85; }
+  .d3-benchmark-comparison .line-path.ghost { opacity: .15; }
+  .d3-benchmark-comparison .line-dot.ghost { opacity: .15; }
+  .d3-benchmark-comparison .baseline.ghost { opacity: .1; }
+  .d3-benchmark-comparison .speedup-annotation line {
+    stroke-dasharray: 4,3;
+    stroke-width: 1.5;
+  }
+  .d3-benchmark-comparison .speedup-label {
+    font-weight: 700;
+    paint-order: stroke;
+    stroke-linejoin: round;
+  }
+  .d3-benchmark-comparison .axes path { display: none; }
+  .d3-benchmark-comparison .axes line { stroke: var(--axis-color); }
+  .d3-benchmark-comparison .axes text { fill: var(--tick-color); }
+  .d3-benchmark-comparison .grid line { stroke: var(--grid-color); }
+  .d3-benchmark-comparison .hover-line {
+    stroke: var(--text-color);
+    stroke-opacity: 0.25;
+    stroke-width: 1;
+    pointer-events: none;
+  }
+  .d3-benchmark-comparison .d3-tooltip {
+    position: absolute;
+    top: 0px;
+    left: 0px;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.35;
+    border: 1px solid var(--border-color);
+    background: var(--surface-bg);
+    color: var(--text-color);
+    box-shadow: 0 4px 24px rgba(0,0,0,.18);
+    opacity: 0;
+    transition: opacity .12s ease;
+    text-align: left;
+    z-index: 10;
+  }
+  .d3-benchmark-comparison .d3-tooltip .tip-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  @media (max-width: 640px) {
+    .d3-benchmark-comparison .controls {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .d3-benchmark-comparison .controls .control-group {
+      width: 100%;
+    }
+    .d3-benchmark-comparison .controls select {
+      width: 100%;
+    }
+    .d3-benchmark-comparison .legend .item {
+      white-space: normal;
+      align-items: flex-start;
+      line-height: 1.2;
+    }
+    .d3-benchmark-comparison .legend .swatch {
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+  }
+</style>
+<script>
+  (() => {
+    const ensureD3 = (cb) => {
+      if (window.d3 && typeof window.d3.select === 'function') return cb();
+      let s = document.getElementById('d3-cdn-script');
+      if (!s) { s = document.createElement('script'); s.id = 'd3-cdn-script'; s.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js'; document.head.appendChild(s); }
+      const onReady = () => { if (window.d3 && typeof window.d3.select === 'function') cb(); };
+      s.addEventListener('load', onReady, { once: true }); if (window.d3) onReady();
+    };
+
+    const bootstrap = () => {
+      const scriptEl = document.currentScript;
+      let container = scriptEl ? scriptEl.previousElementSibling : null;
+      if (!(container && container.classList && container.classList.contains('d3-benchmark-comparison'))) {
+        const cs = Array.from(document.querySelectorAll('.d3-benchmark-comparison')).filter(el => !(el.dataset && el.dataset.mounted === 'true'));
+        container = cs[cs.length - 1] || null;
+      }
+      if (!container) return;
+      if (container.dataset) { if (container.dataset.mounted === 'true') return; container.dataset.mounted = 'true'; }
+
+      container.style.position = container.style.position || 'relative';
+
+      // ─── READ CONFIG ───
+      let mountEl = container;
+      while (mountEl && !mountEl.getAttribute?.('data-config')) { mountEl = mountEl.parentElement; }
+      let cfg = {};
+      try {
+        const raw = mountEl && mountEl.getAttribute ? mountEl.getAttribute('data-config') : null;
+        if (raw && raw.trim()) cfg = raw.trim().startsWith('{') ? JSON.parse(raw) : {};
+      } catch (_) {}
+      if (Object.keys(cfg).length === 0) {
+        try {
+          const urlParams = new URLSearchParams(window.location.hash ? window.location.hash.substring(1) : window.location.search);
+          const configParam = urlParams.get('config');
+          if (configParam) cfg = JSON.parse(decodeURIComponent(configParam));
+        } catch (_) {}
+      }
+
+      // ─── NORMALIZE DATASETS CONFIG ───
+      // Accepts: { "key": "Name" } or { "key": { display, color, shaded, baseline } }
+      // Returns: { key: { display, color, shaded, baseline } }
+      function normalizeDatasets(raw) {
+        const out = {};
+        for (const [k, v] of Object.entries(raw || {})) {
+          out[k] = typeof v === 'string' ? { display: v } : { ...v };
+        }
+        return out;
+      }
+
+      // ─── SETUP SUPPORT ───
+      const SETUPS = cfg.setups || null;
+      const setupNames = SETUPS ? Object.keys(SETUPS) : [];
+      const HIDE_AVERAGE = !!cfg.hideAverage;
+
+      // ─── SETUP DIMENSION (optional second dropdown that groups setups) ───
+      const SETUP_DIM = cfg.setupDimension || null;
+      const dimLabel = SETUP_DIM ? (SETUP_DIM.label || 'Group') : '';
+      const dimGroups = SETUP_DIM ? (SETUP_DIM.groups || {}) : {};
+      const dimensions = Object.keys(dimGroups);
+      let currentDimension = dimensions.length >= 2 ? dimensions[0] : null;
+      // Reverse lookup: setup name → dimension value
+      const setupToDim = {};
+      for (const [dim, names] of Object.entries(dimGroups)) {
+        for (const n of names) setupToDim[n] = dim;
+      }
+      function filteredSetupNames() {
+        if (!currentDimension) return setupNames;
+        return dimGroups[currentDimension] || [];
+      }
+      function setupDisplayName(name) {
+        if (!currentDimension) return name;
+        // Strip " (dimensionValue)" suffix from display name when a dimension is active
+        for (const dim of dimensions) {
+          const suffix = ' (' + dim + ')';
+          if (name.endsWith(suffix)) return name.slice(0, -suffix.length);
+        }
+        return name;
+      }
+
+      const AVG_SETUP_KEY = 'Average (all setups)';
+      const defaultSetupCfg = cfg.defaultSetup || (filteredSetupNames().length >= 2 && !HIDE_AVERAGE ? 'average' : null);
+      let currentSetup = SETUPS ? (defaultSetupCfg === 'average' ? AVG_SETUP_KEY : (defaultSetupCfg && setupNames.includes(defaultSetupCfg) ? defaultSetupCfg : filteredSetupNames()[0])) : null;
+      let DATASETS = SETUPS ? (currentSetup === AVG_SETUP_KEY ? {} : normalizeDatasets(SETUPS[currentSetup].datasets)) : normalizeDatasets(cfg.datasets);
+      let avgDatasets = {};
+      let parsedData = [];
+
+      const RUN_COL       = cfg.runColumn    || 'runname';
+      const STEP_COL      = cfg.stepColumn   || 'steps';
+      const TOKENS_PER_STEP = cfg.tokensPerStep || 2.1e6;
+      const defaultMetric = cfg.defaultMetric || 'agg_score_macro';
+      const defaultView   = cfg.defaultView   || 'bar';
+      const SORT_BARS     = cfg.sortBars !== false;
+      const uid = Math.random().toString(36).slice(2, 8);
+
+      // ─── DATASET ACCESSORS ───
+      function displayName(raw) { return DATASETS[raw] ? DATASETS[raw].display : raw; }
+      function isBaseline(raw) { return !!(DATASETS[raw] && DATASETS[raw].baseline); }
+      function isShaded(raw) { return !!(DATASETS[raw] && DATASETS[raw].shaded); }
+      function pinnedColor(raw) { return DATASETS[raw] && DATASETS[raw].color; }
+      function stripePatternId(raw) { return 'stripe-' + uid + '-' + raw.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+      const METRIC_NAMES = {
+        'agg_score_macro': 'Aggregate Score (Macro)',
+        'agg_score_micro': 'Aggregate Score (Micro)',
+        'agg_score_RC': 'Reading Comprehension',
+        'agg_score_GK': 'General Knowledge',
+        'agg_score_NLU': 'Natural Language Understanding',
+        'agg_score_MATH': 'Math',
+        'agg_score_TABLE': 'Table Understanding',
+        'agg_score_RES': 'Reasoning',
+        'lighteval|arc_cf:easy|3/prob_norm_token': 'ARC-Easy',
+        'lighteval|drop|3/prob_norm_token': 'DROP',
+        'lighteval|gsm8k|3/prob_norm_token': 'GSM8K',
+        'lighteval|hellaswag_cf|3/prob_norm_token': 'HellaSwag',
+        'lighteval|openbookqa_cf|3/prob_norm_token': 'OpenBookQA',
+        'lighteval|piqa_cf|3/prob_norm_token': 'PIQA',
+        'lighteval|squad_v2|3/prob_norm_token': 'SQuAD v2',
+        'lighteval|treb_qa|3/prob_norm_token': 'TriviaQA',
+        'lighteval|wikitablequestions|3/prob_norm_token': 'WikiTableQuestions',
+        'lighteval|winogrande_cf|3/prob_norm_token': 'Winogrande',
+        'lighteval|xcsqa_cf|3/prob_norm_token': 'XCSQA',
+        'lighteval|mmlu_redux_cf:_average|3/prob_norm_token': 'MMLU Redux'
+      };
+
+      // Tooltip
+      let tip = container.querySelector('.d3-tooltip'), tipInner;
+      if (!tip) {
+        tip = document.createElement('div'); tip.className = 'd3-tooltip';
+        tipInner = document.createElement('div'); tipInner.className = 'd3-tooltip__inner'; tip.appendChild(tipInner);
+        container.appendChild(tip);
+      } else { tipInner = tip.querySelector('.d3-tooltip__inner') || tip; }
+
+      // SVG
+      const svg = d3.select(container).append('svg').attr('width', '100%').style('display', 'block');
+      const gRoot = svg.append('g');
+      const defs = svg.append('defs');
+
+      // State
+      let allData = [];
+      let metricKeys = [];
+      let currentMetric = defaultMetric;
+      let currentView = defaultView;
+      let colorMap = {};
+      let highlight = null;
+
+      // ─── HELPERS ───
+      function metricName(key) { return METRIC_NAMES[key] || key; }
+
+      function stepsToTokens(step) { return step * TOKENS_PER_STEP; }
+      function formatTokens(tokens) {
+        if (tokens >= 1e9) return d3.format('.1f')(tokens / 1e9) + 'B';
+        if (tokens >= 1e6) return d3.format('.1f')(tokens / 1e6) + 'M';
+        return d3.format(',')(tokens);
+      }
+      function formatStep(step) {
+        if (step >= 1000) return d3.format('.0f')(step / 1000) + 'K';
+        return String(step);
+      }
+      function stepLabelShort(step) { return `${formatTokens(stepsToTokens(step))} (${formatStep(step)})`; }
+      function stepLabelLong(step) { return `${formatTokens(stepsToTokens(step))} Tokens (${formatStep(step)} Steps)`; }
+
+      function getCategoricalColors(n) {
+        try { if (window.ColorPalettes && typeof window.ColorPalettes.getColors === 'function') return window.ColorPalettes.getColors('categorical', n); } catch (_) {}
+        return (d3.schemeTableau10 || ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac']).slice(0, n);
+      }
+
+      function initColors() {
+        if (Object.keys(colorMap).length) return;
+        const allRaw = Array.from(d3.group(allData, d => d[RUN_COL]).keys()).sort();
+        const unpinned = [];
+        allRaw.forEach(raw => {
+          const pc = pinnedColor(raw);
+          if (pc) { colorMap[raw] = pc; }
+          else { unpinned.push(raw); }
+        });
+        const palette = getCategoricalColors(unpinned.length);
+        unpinned.forEach((raw, i) => { colorMap[raw] = palette[i % palette.length]; });
+      }
+
+      // ─── SETUP HELPERS ───
+      function filterData() {
+        const knownNames = Object.keys(DATASETS);
+        allData = knownNames.length ? parsedData.filter(r => knownNames.includes(r[RUN_COL])) : parsedData;
+        allData.columns = parsedData.columns;
+      }
+
+      function computeAverageData(rawData) {
+        const activeSetups = filteredSetupNames();
+        if (!SETUPS || activeSetups.length < 2) return { data: [], datasets: {} };
+        const displayToRaws = {};
+        for (const sName of activeSetups) {
+          const ds = normalizeDatasets(SETUPS[sName].datasets);
+          for (const [raw, opts] of Object.entries(ds)) {
+            if (!displayToRaws[opts.display]) displayToRaws[opts.display] = [];
+            displayToRaws[opts.display].push(raw);
+          }
+        }
+        const fullDisplay = Object.entries(displayToRaws)
+          .filter(([, raws]) => raws.length >= activeSetups.length);
+        const byRunStep = {};
+        for (const row of rawData) byRunStep[row[RUN_COL] + '|' + row[STEP_COL]] = row;
+        const steps = Array.from(new Set(rawData.map(r => +r[STEP_COL]))).sort((a, b) => a - b);
+        const cols = rawData.columns || Object.keys(rawData[0] || {});
+        const result = [];
+        const dsMap = {};
+        for (const [display, raws] of fullDisplay) {
+          const avgRaw = '__avg__' + display.replace(/[^a-zA-Z0-9]/g, '_');
+          // Merge options from first setup that has this display name
+          const firstOpts = Object.values(normalizeDatasets(SETUPS[activeSetups[0]].datasets)).find(o => o.display === display) || {};
+          dsMap[avgRaw] = { display, ...firstOpts };
+          for (const step of steps) {
+            const rows = raws.map(r => byRunStep[r + '|' + step]).filter(Boolean);
+            if (!rows.length) continue;
+            const avgRow = { [RUN_COL]: avgRaw, [STEP_COL]: String(step) };
+            for (const col of cols) {
+              if (col === RUN_COL || col === STEP_COL) continue;
+              const vals = rows.map(r => +r[col]).filter(v => !isNaN(v));
+              avgRow[col] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+            }
+            result.push(avgRow);
+          }
+        }
+        return { data: result, datasets: dsMap };
+      }
+
+      function recomputeAverage() {
+        const avg = computeAverageData(parsedData.filter(r => !r[RUN_COL].startsWith('__avg__')));
+        avgDatasets = avg.datasets;
+        const origData = parsedData.filter(r => !r[RUN_COL].startsWith('__avg__'));
+        parsedData = origData.concat(avg.data);
+        parsedData.columns = origData.columns || (origData[0] ? Object.keys(origData[0]) : []);
+      }
+
+      function switchSetup(name) {
+        currentSetup = name;
+        if (name === AVG_SETUP_KEY) {
+          DATASETS = { ...avgDatasets };
+        } else {
+          DATASETS = normalizeDatasets(SETUPS[name].datasets);
+        }
+        for (const sName of setupNames) {
+          const ds = normalizeDatasets(SETUPS[sName].datasets);
+          for (const [raw, opts] of Object.entries(ds)) {
+            if (opts.baseline && !DATASETS[raw] && parsedData.some(r => r[RUN_COL] === raw)) {
+              DATASETS[raw] = { ...opts };
+            }
+          }
+        }
+        colorMap = {};
+        filterData();
+        initColors();
+        render();
+        buildLegend();
+      }
+
+      function switchDimension(dim) {
+        currentDimension = dim;
+        recomputeAverage();
+        // Rebuild setup dropdown options
+        const sel = container.querySelector('#setup-' + uid);
+        if (sel) {
+          sel.innerHTML = '';
+          const active = filteredSetupNames();
+          active.forEach(name => {
+            const opt = document.createElement('option'); opt.value = name; opt.textContent = setupDisplayName(name);
+            sel.appendChild(opt);
+          });
+          if (active.length >= 2 && !HIDE_AVERAGE) {
+            const avgOpt = document.createElement('option'); avgOpt.value = AVG_SETUP_KEY; avgOpt.textContent = AVG_SETUP_KEY;
+            sel.appendChild(avgOpt);
+          }
+          // Default to average if available, else first setup
+          if (active.length >= 2 && !HIDE_AVERAGE) {
+            sel.value = AVG_SETUP_KEY;
+            switchSetup(AVG_SETUP_KEY);
+          } else if (active.length) {
+            sel.value = active[0];
+            switchSetup(active[0]);
+          }
+        }
+      }
+
+      function showTip(html, x, y) {
+        tipInner.innerHTML = html;
+        const tipW = tip.offsetWidth || 180;
+        const cW = container.clientWidth || 800;
+        const preferredX = (x + tipW + 20 > cW) ? x - tipW - 12 : x + 12;
+        const px = Math.max(0, Math.min(preferredX, Math.max(0, cW - tipW - 6)));
+        tip.style.transform = `translate(${px}px, ${Math.max(0, y - 20)}px)`;
+        tip.style.opacity = '1';
+      }
+      function hideTip() {
+        tip.style.opacity = '0';
+        tip.style.transform = 'translate(-9999px, -9999px)';
+      }
+
+      function updateHighlight() {
+        gRoot.selectAll('rect.bar').classed('ghost', d => highlight && d.name !== highlight);
+        gRoot.selectAll('text.value-label').classed('ghost', d => highlight && d.name !== highlight);
+        gRoot.selectAll('.line-path').classed('ghost', d => highlight && d.name !== highlight);
+        gRoot.selectAll('.line-dot').classed('ghost', d => highlight && d.name !== highlight);
+        gRoot.selectAll('.baseline-vline').classed('ghost', d => highlight && d.name !== highlight);
+        gRoot.selectAll('.baseline-vlabel').classed('ghost', d => highlight && d.name !== highlight);
+        gRoot.selectAll('.baseline-hline').classed('ghost', d => highlight && d.name !== highlight);
+        gRoot.selectAll('.baseline-hlabel').classed('ghost', d => highlight && d.name !== highlight);
+        container.querySelectorAll('.legend .item').forEach(el => {
+          el.classList.toggle('ghost', highlight && el.getAttribute('data-name') !== highlight);
+        });
+      }
+
+      // ─── AUTO-DETECT METRICS from CSV columns ───
+      function detectMetrics(columns) {
+        const skip = new Set([RUN_COL, STEP_COL, 'seed']);
+        const aggOrder = ['agg_score_macro', 'agg_score_micro', 'agg_score_RC', 'agg_score_GK', 'agg_score_NLU', 'agg_score_MATH', 'agg_score_TABLE', 'agg_score_RES'];
+        const agg = aggOrder.filter(k => columns.includes(k));
+        const ind = columns.filter(k => !skip.has(k) && !agg.includes(k) && !isNaN(+allData[0][k]));
+        return [...agg, ...ind];
+      }
+
+      // ─── BAR CHART ───
+      function renderBar() {
+        const width = container.clientWidth || 800;
+        const isMobile = width < 640;
+        const hasBaselines = allData.some(r => isBaseline(r[RUN_COL]));
+
+        const grouped = d3.group(allData, d => d[RUN_COL]);
+        const finalData = [];
+        for (const [raw, rows] of grouped) {
+          const maxStep = d3.max(rows, r => +r[STEP_COL]);
+          const row = rows.find(r => +r[STEP_COL] === maxStep);
+          if (row) finalData.push({ name: displayName(raw), rawName: raw, value: +row[currentMetric] });
+        }
+        if (SORT_BARS) {
+          finalData.sort((a, b) => b.value - a.value);
+        } else {
+          const order = Object.keys(DATASETS);
+          finalData.sort((a, b) => order.indexOf(a.rawName) - order.indexOf(b.rawName));
+        }
+
+        const barData = finalData.filter(d => !isBaseline(d.rawName));
+        const baselineData = finalData.filter(d => isBaseline(d.rawName));
+        const maxLabelChars = d3.max(finalData, d => d.name.length) || 0;
+        const desiredLeft = Math.max(
+          isMobile ? 92 : 150,
+          Math.round(maxLabelChars * (isMobile ? 6.5 : 8))
+        );
+        const maxLeft = Math.round(width * 0.35);
+        const margin = {
+          top: hasBaselines ? 20 : 12,
+          right: isMobile ? 40 : 56,
+          bottom: isMobile ? 30 : 32,
+          left: Math.min(desiredLeft, maxLeft),
+        };
+
+        const barHeight = 28, barGap = 8;
+        const height = margin.top + margin.bottom + barData.length * (barHeight + barGap);
+        svg.attr('width', width).attr('height', height);
+        gRoot.attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const innerWidth = width - margin.left - margin.right;
+        const innerHeight = height - margin.top - margin.bottom;
+
+        const x = d3.scaleLinear().domain([0, d3.max(finalData, d => d.value) * 1.05]).range([0, innerWidth]);
+        const y = d3.scaleBand().domain(barData.map(d => d.name)).range([0, innerHeight]).padding(0.2);
+
+        // Grid
+        gRoot.selectAll('.grid').data([0]).join('g').attr('class', 'grid').call(g => {
+          g.selectAll('line').data(x.ticks(5)).join('line')
+            .attr('x1', d => x(d)).attr('x2', d => x(d)).attr('y1', 0).attr('y2', innerHeight);
+        });
+
+        // X axis
+        gRoot.selectAll('.axis-x').data([0]).join('g').attr('class', 'axes axis-x')
+          .attr('transform', `translate(0,${innerHeight})`)
+          .call(d3.axisBottom(x).ticks(isMobile ? 4 : 5).tickFormat(d3.format('.2f')).tickSizeOuter(0))
+          .call(g => {
+            g.selectAll('text').attr('fill', 'var(--tick-color)').style('font-size', isMobile ? '10px' : '11px');
+            g.selectAll('path, line').attr('stroke', 'var(--axis-color)');
+          });
+
+        // Y axis
+        gRoot.selectAll('.axis-y').data([0]).join('g').attr('class', 'axes axis-y')
+          .call(d3.axisLeft(y).tickSizeOuter(0))
+          .call(g => {
+            g.selectAll('text').attr('fill', 'var(--text-color)').style('font-size', isMobile ? '11px' : '12px').style('font-weight', '500');
+            g.selectAll('path, line').attr('stroke', 'var(--axis-color)');
+          });
+
+        // Stripe patterns for shaded bars
+        barData.forEach(d => {
+          if (!isShaded(d.rawName)) return;
+          const c = colorMap[d.rawName] || '#999';
+          const pat = defs.append('pattern').attr('id', stripePatternId(d.rawName))
+            .attr('width', 6).attr('height', 6).attr('patternUnits', 'userSpaceOnUse').attr('patternTransform', 'rotate(45)');
+          pat.append('rect').attr('width', 6).attr('height', 6).attr('fill', c).attr('opacity', 0.35);
+          pat.append('line').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 6).attr('stroke', c).attr('stroke-width', 2.5);
+        });
+
+        function barFill(d) {
+          if (isShaded(d.rawName)) return `url(#${stripePatternId(d.rawName)})`;
+          return colorMap[d.rawName] || 'var(--primary-color)';
+        }
+
+        // Bars
+        const barTip = (ev, d) => {
+          const [mx, my] = d3.pointer(ev, container);
+          showTip(`<strong>${d.name}</strong><br/>${metricName(currentMetric)}: <strong>${d.value.toFixed(3)}</strong>`, mx, my);
+        };
+        gRoot.selectAll('rect.bar').data(barData, d => d.name).join(
+          enter => enter.append('rect').attr('class', 'bar')
+            .attr('x', 0).attr('y', d => y(d.name)).attr('height', y.bandwidth()).attr('rx', 3)
+            .attr('fill', d => barFill(d))
+            .attr('width', 0)
+            .on('mouseenter', (ev, d) => { highlight = d.name; updateHighlight(); })
+            .on('mousemove', barTip)
+            .on('mouseleave', () => { hideTip(); highlight = null; updateHighlight(); })
+            .transition().duration(300).attr('width', d => Math.max(0, x(d.value))),
+          update => update
+            .on('mouseenter', (ev, d) => { highlight = d.name; updateHighlight(); })
+            .on('mousemove', barTip)
+            .on('mouseleave', () => { hideTip(); highlight = null; updateHighlight(); })
+            .transition().duration(300)
+            .attr('y', d => y(d.name)).attr('height', y.bandwidth())
+            .attr('width', d => Math.max(0, x(d.value)))
+            .attr('fill', d => barFill(d)),
+          exit => exit.transition().duration(200).attr('width', 0).remove()
+        );
+
+        // Value labels
+        gRoot.selectAll('text.value-label').data(barData, d => d.name).join(
+          enter => enter.append('text').attr('class', 'value-label')
+            .attr('x', d => x(d.value) + 5).attr('y', d => y(d.name) + y.bandwidth() / 2)
+            .attr('dy', '0.35em').attr('fill', 'var(--text-color)').attr('font-size', isMobile ? 10 : 11)
+            .text(d => d.value.toFixed(3)),
+          update => update.transition().duration(300)
+            .attr('x', d => x(d.value) + 5).attr('y', d => y(d.name) + y.bandwidth() / 2)
+            .text(d => d.value.toFixed(3)),
+          exit => exit.remove()
+        );
+
+        // Baseline vertical reference lines
+        gRoot.selectAll('.baseline-vline').data(baselineData, d => d.name).join(
+          enter => enter.append('line').attr('class', 'baseline-vline baseline')
+            .attr('x1', d => x(d.value)).attr('x2', d => x(d.value))
+            .attr('y1', 0).attr('y2', innerHeight)
+            .attr('stroke', d => colorMap[d.rawName] || '#999')
+            .attr('stroke-width', 2).attr('stroke-dasharray', '6,4').attr('opacity', 0.7),
+          update => update.transition().duration(300)
+            .attr('x1', d => x(d.value)).attr('x2', d => x(d.value))
+            .attr('y1', 0).attr('y2', innerHeight)
+            .attr('stroke', d => colorMap[d.rawName] || '#999'),
+          exit => exit.remove()
+        );
+        gRoot.selectAll('.baseline-vlabel').data(baselineData, d => d.name).join(
+          enter => enter.append('text').attr('class', 'baseline-vlabel baseline')
+            .attr('x', d => x(d.value)).attr('y', -4)
+            .attr('text-anchor', 'middle').attr('fill', d => colorMap[d.rawName] || '#999')
+            .attr('font-size', isMobile ? 10 : 11).attr('font-weight', 600)
+            .text(d => `${d.name} (${d.value.toFixed(3)})`),
+          update => update.transition().duration(300)
+            .attr('x', d => x(d.value))
+            .text(d => `${d.name} (${d.value.toFixed(3)})`),
+          exit => exit.remove()
+        );
+      }
+
+      // ─── LINE CHART ───
+      function renderLine() {
+        const width = container.clientWidth || 800;
+        const isMobile = width < 640;
+        const hasBaselines = allData.some(r => isBaseline(r[RUN_COL]));
+        const margin = { top: 16, right: isMobile ? 18 : 50, bottom: isMobile ? 42 : 48, left: isMobile ? 46 : 60 };
+        const height = Math.max(isMobile ? 260 : 300, Math.round(width / (isMobile ? 1.95 : 2.5)));
+        svg.attr('width', width).attr('height', height);
+        gRoot.attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const innerWidth = width - margin.left - margin.right;
+        const innerHeight = height - margin.top - margin.bottom;
+
+        // Build series
+        const grouped = d3.group(allData, d => d[RUN_COL]);
+        const series = [];
+        const baselineSeries = [];
+        for (const [raw, rows] of grouped) {
+          const pts = rows.map(r => ({ step: +r[STEP_COL], value: +r[currentMetric] })).sort((a, b) => a.step - b.step);
+          const entry = { name: displayName(raw), rawName: raw, values: pts };
+          if (isBaseline(raw)) {
+            entry.finalValue = pts[pts.length - 1].value;
+            baselineSeries.push(entry);
+          } else {
+            series.push(entry);
+          }
+        }
+
+        const allSteps = Array.from(new Set(allData.filter(r => !isBaseline(r[RUN_COL])).map(r => +r[STEP_COL]))).sort((a, b) => a - b);
+        const allValues = [...series, ...baselineSeries].flatMap(s => s.finalValue != null ? [s.finalValue] : s.values.map(v => v.value));
+
+        const x = d3.scaleLinear().domain(d3.extent(allSteps)).range([0, innerWidth]);
+        const yMin = d3.min(allValues), yMax = d3.max(allValues), yPad = (yMax - yMin) * 0.08;
+        const y = d3.scaleLinear().domain([yMin - yPad, yMax + yPad]).range([innerHeight, 0]).nice();
+
+        // Grid
+        gRoot.selectAll('.grid').data([0]).join('g').attr('class', 'grid').call(g => {
+          g.selectAll('line').data(y.ticks(6)).join('line')
+            .attr('x1', 0).attr('x2', innerWidth).attr('y1', d => y(d)).attr('y2', d => y(d));
+        });
+
+        // X axis
+        gRoot.selectAll('.axis-x').data([0]).join('g').attr('class', 'axes axis-x')
+          .attr('transform', `translate(0,${innerHeight})`)
+          .call(
+            d3.axisBottom(x)
+              .ticks(isMobile ? 4 : 6)
+              .tickFormat(d => isMobile ? formatTokens(stepsToTokens(d)) : stepLabelShort(d))
+              .tickSizeOuter(0)
+          )
+          .call(g => {
+            g.selectAll('text').attr('fill', 'var(--tick-color)').style('font-size', isMobile ? '9px' : '10px');
+            g.selectAll('path, line').attr('stroke', 'var(--axis-color)');
+          });
+
+        // Y axis
+        gRoot.selectAll('.axis-y').data([0]).join('g').attr('class', 'axes axis-y')
+          .call(d3.axisLeft(y).ticks(isMobile ? 5 : 6).tickFormat(d3.format('.2f')).tickSizeOuter(0))
+          .call(g => {
+            g.selectAll('text').attr('fill', 'var(--tick-color)').style('font-size', isMobile ? '10px' : '11px');
+            g.selectAll('path, line').attr('stroke', 'var(--axis-color)');
+          });
+
+        // Axis labels
+        gRoot.selectAll('.x-label').data([0]).join('text').attr('class', 'x-label')
+          .attr('x', innerWidth / 2).attr('y', innerHeight + (isMobile ? 32 : 38))
+          .attr('text-anchor', 'middle').attr('fill', 'var(--text-color)').attr('font-size', isMobile ? 11 : 12)
+          .text('Tokens (Steps)');
+
+        gRoot.selectAll('.y-label').data([0]).join('text').attr('class', 'y-label')
+          .attr('transform', 'rotate(-90)').attr('x', -innerHeight / 2).attr('y', isMobile ? -34 : -44)
+          .attr('text-anchor', 'middle').attr('fill', 'var(--text-color)').attr('font-size', isMobile ? 11 : 12)
+          .text(metricName(currentMetric));
+
+        // Baseline horizontal reference lines
+        gRoot.selectAll('.baseline-hline').data(baselineSeries, d => d.name).join(
+          enter => enter.append('line').attr('class', 'baseline-hline baseline')
+            .attr('x1', 0).attr('x2', innerWidth)
+            .attr('y1', d => y(d.finalValue)).attr('y2', d => y(d.finalValue))
+            .attr('stroke', d => colorMap[d.rawName] || '#999')
+            .attr('stroke-width', 2).attr('stroke-dasharray', '6,4').attr('opacity', 0.7),
+          update => update.transition().duration(300)
+            .attr('x1', 0).attr('x2', innerWidth)
+            .attr('y1', d => y(d.finalValue)).attr('y2', d => y(d.finalValue))
+            .attr('stroke', d => colorMap[d.rawName] || '#999'),
+          exit => exit.remove()
+        );
+        gRoot.selectAll('.baseline-hlabel').data(baselineSeries, d => d.name).join(
+          enter => enter.append('text').attr('class', 'baseline-hlabel baseline')
+            .attr('x', 4).attr('y', d => y(d.finalValue) - 6)
+            .attr('text-anchor', 'start')
+            .attr('fill', d => colorMap[d.rawName] || '#999')
+            .attr('font-size', isMobile ? 9 : 10).attr('font-weight', 600)
+            .text(d => `${d.name} (${d.finalValue.toFixed(3)})`),
+          update => update.transition().duration(300)
+            .attr('x', 4).attr('y', d => y(d.finalValue) - 6)
+            .text(d => `${d.name} (${d.finalValue.toFixed(3)})`),
+          exit => exit.remove()
+        );
+
+        // Lines (non-baseline)
+        const line = d3.line().x(d => x(d.step)).y(d => y(d.value)).curve(d3.curveMonotoneX);
+        gRoot.selectAll('.line-path').data(series, d => d.name).join(
+          enter => enter.append('path').attr('class', 'line-path')
+            .attr('stroke', d => colorMap[d.rawName] || 'var(--primary-color)')
+            .attr('d', d => line(d.values)),
+          update => update.transition().duration(300)
+            .attr('stroke', d => colorMap[d.rawName] || 'var(--primary-color)')
+            .attr('d', d => line(d.values)),
+          exit => exit.remove()
+        );
+
+        // Dots (non-baseline)
+        const dotData = series.flatMap(s => s.values.map(v => ({ name: s.name, rawName: s.rawName, step: v.step, value: v.value })));
+        gRoot.selectAll('.line-dot').data(dotData, d => d.name + '-' + d.step).join(
+          enter => enter.append('circle').attr('class', 'line-dot')
+            .attr('cx', d => x(d.step)).attr('cy', d => y(d.value)).attr('r', 3)
+            .attr('fill', d => colorMap[d.rawName] || 'var(--primary-color)')
+            .attr('stroke', 'var(--surface-bg)').attr('stroke-width', 1),
+          update => update.transition().duration(300)
+            .attr('cx', d => x(d.step)).attr('cy', d => y(d.value))
+            .attr('fill', d => colorMap[d.rawName] || 'var(--primary-color)'),
+          exit => exit.remove()
+        );
+
+        // Speedup annotation
+        if (cfg.speedupAnnotation && currentMetric === defaultMetric) {
+          const ann = cfg.speedupAnnotation;
+          const baselineRows = parsedData.filter(r => r[RUN_COL] === ann.baselineRun);
+          const baselineStepResolved = ann.baselineStep || d3.max(baselineRows, r => +r[STEP_COL]);
+          const baselineRow = baselineRows.find(r => +r[STEP_COL] === baselineStepResolved);
+          const targetSeries = series.find(s => s.rawName === ann.targetRun);
+
+          if (baselineRow && targetSeries) {
+            const baselineVal = +baselineRow[currentMetric];
+            const baselineStepNum = baselineStepResolved;
+
+            // Find the exact step where the target *data points* first meet or exceed baseline
+            const pts = targetSeries.values;
+            let crossStep = null;
+            for (let i = 0; i < pts.length; i++) {
+              if (pts[i].value >= baselineVal) {
+                if (i === 0) { crossStep = pts[0].step; break; }
+                const t = (baselineVal - pts[i - 1].value) / (pts[i].value - pts[i - 1].value);
+                crossStep = pts[i - 1].step + t * (pts[i].step - pts[i - 1].step);
+                break;
+              }
+            }
+
+            // Snap crossStep to the nearest actual data point for visual alignment
+            let snapStep = crossStep;
+            if (crossStep !== null) {
+              let bestDist = Infinity;
+              for (const p of pts) {
+                const d = Math.abs(p.step - crossStep);
+                if (d < bestDist) { bestDist = d; snapStep = p.step; }
+              }
+            }
+
+            if (crossStep !== null) {
+              const speedup = baselineStepNum / crossStep;
+              const targetColor = colorMap[ann.targetRun] || 'var(--primary-color)';
+              const annG = gRoot.append('g').attr('class', 'speedup-annotation');
+
+              const yPos = y(baselineVal);
+              const snapPt = pts.find(p => p.step === snapStep);
+              const x1Pos = x(snapStep);
+              const y1Pos = snapPt ? y(snapPt.value) : yPos;
+              const x2Pos = x(baselineStepNum);
+
+              // Vertical drop from FinePhrase curve to baseline level at snap point
+              annG.append('line')
+                .attr('x1', x1Pos).attr('x2', x1Pos)
+                .attr('y1', y1Pos).attr('y2', yPos)
+                .attr('stroke', targetColor).attr('stroke-width', 1.5).attr('stroke-dasharray', '4,3');
+
+              // Horizontal bracket at baseline level
+              annG.append('line')
+                .attr('x1', x1Pos).attr('x2', x2Pos)
+                .attr('y1', yPos).attr('y2', yPos)
+                .attr('stroke', targetColor).attr('stroke-width', 1.5).attr('stroke-dasharray', '4,3');
+
+              // Vertical tick at baseline step end
+              annG.append('line')
+                .attr('x1', x2Pos).attr('x2', x2Pos)
+                .attr('y1', yPos - 8).attr('y2', yPos + 8)
+                .attr('stroke', targetColor).attr('stroke-width', 2).attr('stroke-dasharray', 'none');
+
+              // Speedup label
+              const labelX = (x1Pos + x2Pos) / 2;
+              annG.append('text').attr('class', 'speedup-label')
+                .attr('x', labelX).attr('y', yPos - 10)
+                .attr('text-anchor', 'middle')
+                .attr('fill', targetColor)
+                .attr('stroke', 'var(--surface-bg)').attr('stroke-width', 3)
+                .attr('font-size', isMobile ? 12 : 14)
+                .text(`${speedup.toFixed(1)}× faster`);
+
+              // Vertical "how much better" annotation at baselineStep
+              const targetAtBaseline = targetSeries.values.find(v => v.step === baselineStepNum);
+              if (targetAtBaseline) {
+                const targetVal = targetAtBaseline.value;
+                const pctBetter = ((targetVal - baselineVal) / baselineVal * 100).toFixed(0);
+                const yTop = y(targetVal);
+                const yBot = y(baselineVal);
+                const vx = x2Pos;
+
+                // Vertical line from baseline to FinePhrase at that step
+                annG.append('line')
+                  .attr('x1', vx).attr('x2', vx)
+                  .attr('y1', yBot).attr('y2', yTop)
+                  .attr('stroke', targetColor).attr('stroke-width', 2).attr('stroke-dasharray', 'none');
+
+                // Tick caps
+                const capW = 5;
+                annG.append('line')
+                  .attr('x1', vx - capW).attr('x2', vx + capW)
+                  .attr('y1', yBot).attr('y2', yBot)
+                  .attr('stroke', targetColor).attr('stroke-width', 2);
+                annG.append('line')
+                  .attr('x1', vx - capW).attr('x2', vx + capW)
+                  .attr('y1', yTop).attr('y2', yTop)
+                  .attr('stroke', targetColor).attr('stroke-width', 2);
+
+                // "+X% better" label (place left of line if near right edge)
+                const nearRightEdge = vx > innerWidth * 0.75;
+                annG.append('text').attr('class', 'speedup-label')
+                  .attr('x', nearRightEdge ? vx - 8 : vx + 8)
+                  .attr('y', (yTop + yBot) / 2)
+                  .attr('text-anchor', nearRightEdge ? 'end' : 'start')
+                  .attr('dominant-baseline', 'central')
+                  .attr('fill', targetColor)
+                  .attr('stroke', 'var(--surface-bg)').attr('stroke-width', 3)
+                  .attr('font-size', isMobile ? 11 : 13)
+                  .text(`${pctBetter}% better`);
+              }
+            }
+          }
+        }
+
+        // Hover overlay
+        gRoot.selectAll('.hover-line').data([0]).join('line').attr('class', 'hover-line')
+          .attr('y1', 0).attr('y2', innerHeight).style('display', 'none');
+
+        gRoot.selectAll('.hover-overlay').data([0]).join('rect').attr('class', 'hover-overlay')
+          .attr('width', innerWidth).attr('height', innerHeight)
+          .attr('fill', 'none').attr('pointer-events', 'all')
+          .on('mousemove', (ev) => {
+            const [mx] = d3.pointer(ev, gRoot.node());
+            const nearest = allSteps.reduce((best, s) => Math.abs(s - x.invert(mx)) < Math.abs(best - x.invert(mx)) ? s : best, allSteps[0]);
+            gRoot.select('.hover-line').attr('x1', x(nearest)).attr('x2', x(nearest)).style('display', null);
+
+            const entries = series.map(s => {
+              const pt = s.values.find(v => v.step === nearest);
+              return pt ? { name: s.name, rawName: s.rawName, value: pt.value } : null;
+            }).filter(Boolean);
+            baselineSeries.forEach(s => {
+              entries.push({ name: s.name, rawName: s.rawName, value: s.finalValue });
+            });
+            entries.sort((a, b) => b.value - a.value);
+
+            let html = `<div style="font-weight:700;margin-bottom:4px;">${stepLabelLong(nearest)}</div>`;
+            entries.forEach(e => {
+              html += `<div><span class="tip-dot" style="background:${colorMap[e.rawName]}"></span>${e.name}: <strong>${e.value.toFixed(3)}</strong></div>`;
+            });
+            const [cx, cy] = d3.pointer(ev, container);
+            showTip(html, cx, cy);
+          })
+          .on('mouseleave', () => {
+            gRoot.select('.hover-line').style('display', 'none');
+            hideTip();
+          });
+      }
+
+      // ─── RENDER ───
+      function render() {
+        if (!allData.length) return;
+        initColors();
+        gRoot.selectAll('*').remove();
+        defs.selectAll('*').remove();
+        if (currentView === 'bar') renderBar(); else renderLine();
+      }
+
+      // ─── UI ───
+      function buildUI() {
+        const controls = document.createElement('div'); controls.className = 'controls';
+
+        // Dimension dropdown — shown before Setup when setupDimension is configured
+        if (dimensions.length >= 2) {
+          const dimGroup = document.createElement('div'); dimGroup.className = 'control-group';
+          const dimLabelEl = document.createElement('label'); dimLabelEl.setAttribute('for', 'dim-' + uid); dimLabelEl.textContent = dimLabel;
+          const dimSelect = document.createElement('select'); dimSelect.id = 'dim-' + uid;
+          dimensions.forEach(dim => {
+            const opt = document.createElement('option'); opt.value = dim; opt.textContent = dim;
+            if (dim === currentDimension) opt.selected = true;
+            dimSelect.appendChild(opt);
+          });
+          dimSelect.addEventListener('change', () => { switchDimension(dimSelect.value); });
+          dimGroup.appendChild(dimLabelEl); dimGroup.appendChild(dimSelect);
+          controls.appendChild(dimGroup);
+        }
+
+        if (SETUPS && setupNames.length > 0) {
+          const setupGroup = document.createElement('div'); setupGroup.className = 'control-group';
+          const setupLabel = document.createElement('label'); setupLabel.setAttribute('for', 'setup-' + uid); setupLabel.textContent = 'Setup';
+          const setupSelect = document.createElement('select'); setupSelect.id = 'setup-' + uid;
+          const active = filteredSetupNames();
+          active.forEach(name => {
+            const opt = document.createElement('option'); opt.value = name; opt.textContent = setupDisplayName(name);
+            if (name === currentSetup) opt.selected = true;
+            setupSelect.appendChild(opt);
+          });
+          if (active.length >= 2 && !HIDE_AVERAGE) {
+            const avgOpt = document.createElement('option'); avgOpt.value = AVG_SETUP_KEY; avgOpt.textContent = AVG_SETUP_KEY;
+            if (currentSetup === AVG_SETUP_KEY) avgOpt.selected = true;
+            setupSelect.appendChild(avgOpt);
+          }
+          setupSelect.addEventListener('change', () => { switchSetup(setupSelect.value); });
+          setupGroup.appendChild(setupLabel); setupGroup.appendChild(setupSelect);
+          controls.appendChild(setupGroup);
+        }
+
+        const viewGroup = document.createElement('div'); viewGroup.className = 'control-group';
+        const viewLabel = document.createElement('label'); viewLabel.setAttribute('for', 'view-' + uid); viewLabel.textContent = 'View';
+        const viewSelect = document.createElement('select'); viewSelect.id = 'view-' + uid;
+        [['bar', 'Final Score'], ['line', 'Training Progression']].forEach(([val, text]) => {
+          const opt = document.createElement('option'); opt.value = val; opt.textContent = text;
+          if (val === currentView) opt.selected = true;
+          viewSelect.appendChild(opt);
+        });
+        viewSelect.addEventListener('change', () => { currentView = viewSelect.value; render(); });
+        viewGroup.appendChild(viewLabel); viewGroup.appendChild(viewSelect);
+        controls.appendChild(viewGroup);
+
+        const metricGroup = document.createElement('div'); metricGroup.className = 'control-group';
+        const metricLabel = document.createElement('label'); metricLabel.setAttribute('for', 'metric-' + uid); metricLabel.textContent = 'Metric';
+        const metricSelect = document.createElement('select'); metricSelect.id = 'metric-' + uid;
+        metricGroup.appendChild(metricLabel); metricGroup.appendChild(metricSelect);
+        controls.appendChild(metricGroup);
+
+        container.appendChild(controls);
+
+        const legend = document.createElement('div'); legend.className = 'legend';
+        legend.innerHTML = '<div class="legend-title">Legend</div><div class="items"></div>';
+        container.appendChild(legend);
+      }
+
+      function populateMetricSelect() {
+        const sel = container.querySelector('#metric-' + uid);
+        if (!sel) return;
+        sel.innerHTML = '';
+        const aggGroup = document.createElement('optgroup'); aggGroup.label = 'Aggregate Scores';
+        const indGroup = document.createElement('optgroup'); indGroup.label = 'Individual Benchmarks';
+        metricKeys.forEach(key => {
+          const opt = document.createElement('option'); opt.value = key; opt.textContent = metricName(key);
+          if (key === currentMetric) opt.selected = true;
+          if (key.startsWith('agg_score')) aggGroup.appendChild(opt); else indGroup.appendChild(opt);
+        });
+        if (aggGroup.children.length) sel.appendChild(aggGroup);
+        if (indGroup.children.length) sel.appendChild(indGroup);
+        sel.addEventListener('change', () => { currentMetric = sel.value; render(); });
+      }
+
+      function buildLegend() {
+        const items = container.querySelector('.legend .items');
+        if (!items) return;
+        items.innerHTML = '';
+        const grouped = d3.group(allData, d => d[RUN_COL]);
+        const declOrder = Object.keys(DATASETS);
+        const sorted = Array.from(grouped.entries())
+          .map(([raw, rows]) => {
+            const maxStep = d3.max(rows, r => +r[STEP_COL]);
+            const row = rows.find(r => +r[STEP_COL] === maxStep);
+            return { raw, score: row ? +row[defaultMetric] : 0 };
+          })
+          .sort((a, b) => SORT_BARS ? b.score - a.score : declOrder.indexOf(a.raw) - declOrder.indexOf(b.raw))
+          .map(d => d.raw);
+        sorted.filter(raw => !isBaseline(raw)).forEach(raw => {
+          const name = displayName(raw);
+          const el = document.createElement('span'); el.className = 'item'; el.setAttribute('data-name', name);
+          const sw = document.createElement('span'); sw.className = 'swatch';
+          const c = colorMap[raw] || '#999';
+          if (isShaded(raw)) {
+            sw.style.background = c;
+            sw.style.backgroundImage = 'repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(255,255,255,0.4) 2px, rgba(255,255,255,0.4) 4px)';
+          } else {
+            sw.style.background = c;
+          }
+          const txt = document.createElement('span'); txt.textContent = name;
+          el.appendChild(sw); el.appendChild(txt); items.appendChild(el);
+          el.addEventListener('mouseenter', () => { highlight = name; updateHighlight(); });
+          el.addEventListener('mouseleave', () => { highlight = null; updateHighlight(); });
+        });
+      }
+
+      buildUI();
+
+      // ─── DATA LOADING ───
+      const fetchFirstAvailable = async (paths) => {
+        for (const p of paths) {
+          try { const r = await fetch(p, { cache: 'no-cache' }); if (r.ok) return await r.text(); } catch (_) {}
+        }
+        throw new Error('CSV not found');
+      };
+
+      let dataMountEl = container;
+      while (dataMountEl && !dataMountEl.getAttribute?.('data-datafiles')) { dataMountEl = dataMountEl.parentElement; }
+      let providedData = null;
+      try {
+        const attr = dataMountEl && dataMountEl.getAttribute ? dataMountEl.getAttribute('data-datafiles') : null;
+        if (attr && attr.trim()) providedData = attr.trim().startsWith('[') ? JSON.parse(attr) : attr.trim();
+      } catch (_) {}
+      if (!providedData) {
+        try {
+          const urlParams = new URLSearchParams(window.location.hash ? window.location.hash.substring(1) : window.location.search);
+          const dataParam = urlParams.get('data');
+          if (dataParam) providedData = dataParam.trim().startsWith('[') ? JSON.parse(dataParam) : dataParam.trim();
+        } catch (_) {}
+      }
+
+      const ensurePrefix = (p) => (typeof p === 'string' && p && !p.includes('/')) ? `/data/${p}` : p;
+      const csvPaths = providedData
+        ? (Array.isArray(providedData) ? providedData.map(ensurePrefix) : [ensurePrefix(providedData)])
+        : ['/data/benchmark-results.csv'];
+
+      (async () => {
+        try {
+          const text = await fetchFirstAvailable(csvPaths);
+          const parsed = d3.csvParse(text);
+          parsedData = parsed;
+          if (SETUPS && filteredSetupNames().length >= 2 && !HIDE_AVERAGE) {
+            const avg = computeAverageData(parsed);
+            avgDatasets = avg.datasets;
+            const hasAvgData = Object.values(avgDatasets).some(o => !o.baseline);
+            if (hasAvgData) {
+              parsedData = parsed.concat(avg.data);
+              parsedData.columns = parsed.columns;
+              if (currentSetup === AVG_SETUP_KEY) DATASETS = { ...avgDatasets };
+            } else {
+              const sel = container.querySelector('#setup-' + uid);
+              if (sel) { const o = sel.querySelector(`option[value="${AVG_SETUP_KEY}"]`); if (o) o.remove(); }
+              if (currentSetup === AVG_SETUP_KEY) { currentSetup = filteredSetupNames()[0]; DATASETS = normalizeDatasets(SETUPS[currentSetup].datasets); if (sel) sel.value = currentSetup; }
+            }
+          }
+          filterData();
+          metricKeys = detectMetrics(allData.columns);
+          if (!metricKeys.includes(currentMetric)) currentMetric = metricKeys[0];
+          populateMetricSelect();
+          render();
+          buildLegend();
+          if (window.ResizeObserver) { new ResizeObserver(() => render()).observe(container); }
+          else { window.addEventListener('resize', () => render()); }
+        } catch (e) {
+          const pre = document.createElement('pre');
+          pre.textContent = 'Data load error: ' + (e && e.message ? e.message : e);
+          pre.style.color = 'var(--danger, #b00020)';
+          pre.style.fontSize = '12px';
+          container.appendChild(pre);
+        }
+      })();
+    };
+
+    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', () => ensureD3(bootstrap), { once: true }); }
+    else { ensureD3(bootstrap); }
+  })();
+</script>
